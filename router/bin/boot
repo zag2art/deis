@@ -37,7 +37,6 @@ etcd_safe_mkdir /deis/controller
 etcd_safe_mkdir /deis/services
 etcd_safe_mkdir /deis/domains
 etcd_safe_mkdir /deis/builder
-etcd_set_default stickySessions off
 etcd_set_default gzip on
 etcd_set_default gzipHttpVersion 1.1
 etcd_set_default gzipCompLevel 5
