@@ -2,10 +2,15 @@ include ../includes.mk
 
 COMPONENT = logger
 IMAGE = $(IMAGE_PREFIX)$(COMPONENT):$(BUILD_TAG)
+BUILD_IMAGE := $(COMPONENT)-build
 DEV_IMAGE = $(DEV_REGISTRY)/$(IMAGE)
 
 build: check-docker
-	docker build -t $(IMAGE) .
+	docker build -t $(BUILD_IMAGE) .
+	docker cp `docker run -d $(BUILD_IMAGE)`:/go/bin/logger image/bin/
+	docker build -t $(IMAGE) image
+	rm -rf image/bin/logger
+	-docker rm -f `docker ps | grep logger-build | awk '{print $$1}'`
 
 clean: check-docker check-registry
 	docker rmi $(IMAGE)
@@ -14,10 +19,10 @@ full-clean: check-docker check-registry
 	docker images -q $(IMAGE_PREFIX)$(COMPONENT) | xargs docker rmi -f
 
 install: check-deisctl
-	deisctl scale $(COMPONENT)=1
+	deisctl install $(COMPONENT)
 
 uninstall: check-deisctl
-	deisctl scale $(COMPONENT)=0
+	deisctl uninstall $(COMPONENT)
 
 start: check-deisctl
 	deisctl start $(COMPONENT)
@@ -29,9 +34,13 @@ restart: stop start
 
 run: install start
 
-dev-release: check-registry check-deisctl
+dev-release: push set-image
+
+push: check-registry
 	docker tag $(IMAGE) $(DEV_IMAGE)
 	docker push $(DEV_IMAGE)
+
+set-image: check-deisctl
 	deisctl config $(COMPONENT) set image=$(DEV_IMAGE)
 
 release:

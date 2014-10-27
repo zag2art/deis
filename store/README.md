@@ -7,7 +7,7 @@ The bin/boot scripts and Dockerfiles were inspired by
 Seán C. McCord's [docker-ceph](https://github.com/Ulexus/docker-ceph) repository.
 
 This Docker image is based on the official
-[ubuntu:14.04](https://registry.hub.docker.com/_/ubuntu/) image.
+[ubuntu-debootstrap:14.04](https://registry.hub.docker.com/_/ubuntu/) image.
 
 Please add any issues you find with this software to the
 [Deis project](https://github.com/deis/deis/issues).
@@ -22,16 +22,14 @@ The store component is comprised of four containers:
 keeping track of the cluster state (this is also called a monitor in Ceph)
 * [store-gateway](https://index.docker.io/u/deis/store-gateway/) - the blob store gateway,
 offering Swift and S3-compatible bucket APIs
-* [store-data](systemd/deis-store-data@.service.template) - a container which exposes volumes
-to be used by the other containers
 
-These are all based upon the [store-base](https://index.docker.io/u/deis/store-base/) image,
+These are all based upon the [store-base](https://github.com/deis/deis/tree/master/store/base) image,
 which is a Docker container that preinstalls Ceph.
 
 ## Usage
 
 Please consult the [Makefile](Makefile) for current instructions on how to build, test, push,
-install, and start **deis/database**.
+install, and start **deis/store**.
 
 ## License
 

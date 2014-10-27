@@ -1,7 +1,14 @@
 # Provision a Deis Cluster on DigitalOcean
 
-## Customize cloud-config.yml
-Edit [user-data](../coreos/user-data) and add a discovery URL. This URL will be used by all nodes in this Deis cluster. You can get a new discovery URL by sending a request to http://discovery.etcd.io/new.
+## Discovery URL
+
+Create a user-data file with a new discovery URL this way:
+
+```console
+$ make discovery-url
+```
+
+Or copy [`contrib/coreos/user-data.example`](../coreos/user-data.example) to `contrib/coreos/user-data` and follow the directions in the `etcd:` section to add a unique discovery URL.
 
 ## Install docl and authorize:
 The docl gem consumes the DigitalOcean API.
@@ -60,6 +67,21 @@ droplet size. The default is 8 GB. Specify the size with NGB, where N is 2, 4, 8
 
 This will print the IP addresses of the initialized machines.
 
+## Configure Deis
+Set the default domain used to anchor your applications:
+
+```console
+$ deisctl config platform set domain=mycluster.local
+```
+
+For this to work, you'll need to configure DNS records so you can access applications hosted on Deis. See [Configuring DNS](http://docs.deis.io/en/latest/installing_deis/configure-dns/) for details.
+
+If you want to allow `deis run` for one-off admin commands, you must provide an SSH private key that allows Deis to gather container logs on CoreOS hosts:
+
+```console
+$ deisctl config platform set sshPrivateKey=<path-to-private-key>
+```
+
 ## Initialize the cluster
 set DEISCTL_TUNNEL to one of the IPs of the virtual machines (these are printed on the console in a previous step). You can also login to the web interface of DigitalOcean to see the Public IP addresses.
 
@@ -68,9 +90,6 @@ $ export DEISCTL_TUNNEL=23.253.219.94
 $ deisctl install platform && deisctl start platform
 ```
 Deisctl will deploy Deis and make sure the services are started properly. Grab a coffee.
-
-### Configure DNS
-You'll need to configure DNS records so you can access applications hosted on Deis. See [Configuring DNS](http://docs.deis.io/en/latest/installing_deis/configure-dns/) for details.
 
 ### Use Deis!
 After that, register with Deis!

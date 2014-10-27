@@ -12,8 +12,14 @@ $ ssh-keygen -q -t rsa -f ~/.ssh/deis -N '' -C deis
 ## Customize user-data
 
 ### Discovery URL
-Edit [user-data](../coreos/user-data) and add a new discovery URL.
-You can get a new one by sending a request to http://discovery.etcd.io/new.
+
+Create a user-data file with a new discovery URL this way:
+
+```console
+$ make discovery-url
+```
+
+Or copy [`contrib/coreos/user-data.example`](../coreos/user-data.example) to `contrib/coreos/user-data` and follow the directions in the `etcd:` section to add a unique discovery URL.
 
 ### SSH Key
 Add the public key part for the SSH key generated in the first step to the [user-data](../coreos/user-data) file:
@@ -49,9 +55,24 @@ coreos-install -C alpha -c /tmp/config -d /dev/sda
 ```
 
 This will install the current [CoreOS](https://coreos.com/) release to disk. If you want to install the recommended [CoreOS](https://coreos.com/) version check the [Deis changelog](../../CHANGELOG.md)
-and specify that version by appending the `-V` parameter to the install command, e.g. `-V 459.0.0`.
+and specify that version by appending the `-V` parameter to the install command, e.g. `-V 472.0.0`.
 
 After the installation has finished reboot your server. Once your machine is back up you should be able to log in as the `core` user using the `deis` ssh key.
+
+## Configure Deis
+Set the default domain used to anchor your applications:
+
+```console
+$ deisctl config platform set domain=mycluster.local
+```
+
+For this to work, you'll need to configure DNS records so you can access applications hosted on Deis. See [Configuring DNS](http://docs.deis.io/en/latest/installing_deis/configure-dns/) for details.
+
+If you want to allow `deis run` for one-off admin commands, you must provide an SSH private key that allows Deis to gather container logs on CoreOS hosts:
+
+```console
+$ deisctl config platform set sshPrivateKey=<path-to-private-key>
+```
 
 ## Initialize the cluster
 Once your server(s) are all provisioned you can proceed to install Deis. Use the hostname of one of your machines in the next step.

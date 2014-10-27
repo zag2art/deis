@@ -30,8 +30,15 @@ Choose an existing keypair or generate a new one, if desired. Tell supernova abo
 $ supernova production keypair-add --pub-key ~/.ssh/deis.pub deis-key
 ```
 
-### Customize cloud-config.yml
-Edit [user-data](../coreos/user-data) and add a discovery URL. This URL will be used by all nodes in this Deis cluster. You can get a new discovery URL by sending a request to http://discovery.etcd.io/new.
+### Customize user-data
+
+Create a user-data file with a new discovery URL this way:
+
+```console
+$ make discovery-url
+```
+
+Or copy [`contrib/coreos/user-data.example`](../coreos/user-data.example) to `contrib/coreos/user-data` and follow the directions in the `etcd:` section to add a unique discovery URL.
 
 ### Choose number of instances
 By default, the provision script will provision 3 servers. You can override this by setting `DEIS_NUM_INSTANCES`:
@@ -52,6 +59,21 @@ $ cd contrib/rackspace
 $ ./provision-rackspace-cluster.sh
 Usage: provision-rackspace-cluster.sh <key pair name> [flavor]
 $ ./provision-rackspace-cluster.sh deis-key
+```
+
+## Configure Deis
+Set the default domain used to anchor your applications:
+
+```console
+$ deisctl config platform set domain=mycluster.local
+```
+
+For this to work, you'll need to configure DNS records so you can access applications hosted on Deis. See [Configuring DNS](http://docs.deis.io/en/latest/installing_deis/configure-dns/) for details.
+
+If you want to allow `deis run` for one-off admin commands, you must provide an SSH private key that allows Deis to gather container logs on CoreOS hosts:
+
+```console
+$ deisctl config platform set sshPrivateKey=<path-to-private-key>
 ```
 
 ### Initialize the cluster

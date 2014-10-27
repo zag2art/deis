@@ -15,18 +15,19 @@ import time
 import threading
 
 from django.conf import settings
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Max
-from django.db.models.signals import post_delete
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save
+from django.dispatch import receiver
 from django.utils.encoding import python_2_unicode_compatible
 from django_fsm import FSMField, transition
 from django_fsm.signals import post_transition
 from docker.utils import utils
 from json_field.fields import JSONField
 import requests
+from rest_framework.authtoken.models import Token
 
 from api import fields
 from registry import publish_release
@@ -89,49 +90,6 @@ class UuidAuditedModel(AuditedModel):
 
 
 @python_2_unicode_compatible
-class Cluster(UuidAuditedModel):
-    """
-    Cluster used to run jobs
-    """
-
-    CLUSTER_TYPES = (('mock', 'Mock Cluster'),
-                     ('coreos', 'CoreOS Cluster'),
-                     ('chaos', 'Chaos Cluster'))
-
-    owner = models.ForeignKey(settings.AUTH_USER_MODEL)
-    id = models.CharField(max_length=128, unique=True)
-    type = models.CharField(max_length=16, choices=CLUSTER_TYPES, default='coreos')
-
-    domain = models.CharField(max_length=128, validators=[validate_domain])
-    hosts = models.CharField(max_length=256, validators=[validate_comma_separated])
-    auth = models.TextField()
-    options = JSONField(default={}, blank=True)
-
-    def __str__(self):
-        return self.id
-
-    def _get_scheduler(self, *args, **kwargs):
-        module_name = 'scheduler.' + self.type
-        mod = importlib.import_module(module_name)
-        return mod.SchedulerClient(self.id, self.hosts, self.auth,
-                                   self.domain, self.options)
-
-    _scheduler = property(_get_scheduler)
-
-    def create(self):
-        """
-        Initialize a cluster's router and log aggregator
-        """
-        return self._scheduler.setUp()
-
-    def destroy(self):
-        """
-        Destroy a cluster's router and log aggregator
-        """
-        return self._scheduler.tearDown()
-
-
-@python_2_unicode_compatible
 class App(UuidAuditedModel):
     """
     Application used to service requests on behalf of end-users
@@ -139,7 +97,6 @@ class App(UuidAuditedModel):
 
     owner = models.ForeignKey(settings.AUTH_USER_MODEL)
     id = models.SlugField(max_length=64, unique=True)
-    cluster = models.ForeignKey('Cluster')
     structure = JSONField(default={}, blank=True, validators=[validate_app_structure])
 
     class Meta:
@@ -148,9 +105,20 @@ class App(UuidAuditedModel):
     def __str__(self):
         return self.id
 
+    def _get_scheduler(self, *args, **kwargs):
+        module_name = 'scheduler.' + settings.SCHEDULER_MODULE
+        mod = importlib.import_module(module_name)
+
+        return mod.SchedulerClient(settings.SCHEDULER_TARGET,
+                                   settings.SCHEDULER_AUTH,
+                                   settings.SCHEDULER_OPTIONS,
+                                   settings.SSH_PRIVATE_KEY)
+
+    _scheduler = property(_get_scheduler)
+
     @property
     def url(self):
-        return self.id + '.' + self.cluster.domain
+        return self.id + '.' + settings.DEIS_DOMAIN
 
     def log(self, message):
         """Logs a message to the application's log file.
@@ -161,18 +129,18 @@ class App(UuidAuditedModel):
         existing logging configurations.
         """
         with open(os.path.join(settings.DEIS_LOG_DIR, self.id + '.log'), 'a') as f:
-            msg = "{} deis[api]: {}\n".format(time.strftime('%Y-%m-%d %H:%M:%S'), message)
+            msg = "{} deis[api]: {}\n".format(time.strftime(settings.DEIS_DATETIME_FORMAT),
+                                              message)
             f.write(msg.encode('utf-8'))
 
     def create(self, *args, **kwargs):
-        """Create a new application with an initial release"""
+        """Create a new application with an initial config and release"""
         config = Config.objects.create(owner=self.owner, app=self)
-        build = Build.objects.create(owner=self.owner, app=self, image=settings.DEFAULT_BUILD)
-        Release.objects.create(version=1, owner=self.owner, app=self, config=config, build=build)
+        Release.objects.create(version=1, owner=self.owner, app=self, config=config, build=None)
 
     def delete(self, *args, **kwargs):
         """Delete this application including all containers"""
-        for c in self.container_set.all():
+        for c in self.container_set.exclude(type='run'):
             c.destroy()
         self._clean_app_logs()
         return super(App, self).delete(*args, **kwargs)
@@ -185,6 +153,8 @@ class App(UuidAuditedModel):
 
     def scale(self, user, structure):  # noqa
         """Scale containers up or down to match requested structure."""
+        if self.release_set.latest().build is None:
+            raise EnvironmentError('No build associated with this release')
         requested_structure = structure.copy()
         release = self.release_set.latest()
         # test for available process types
@@ -269,7 +239,7 @@ class App(UuidAuditedModel):
 
     def deploy(self, user, release, initial=False):
         """Deploy a new release to this application"""
-        existing = self.container_set.all()
+        existing = self.container_set.exclude(type='run')
         new = []
         for e in existing:
             n = e.clone(release)
@@ -341,34 +311,37 @@ class App(UuidAuditedModel):
 
     def run(self, user, command):
         """Run a one-off command in an ephemeral app container."""
+        # FIXME: remove the need for SSH private keys by using
+        # a scheduler that supports one-off admin tasks natively
+        if not settings.SSH_PRIVATE_KEY:
+            raise EnvironmentError('Support for admin commands is not configured')
+        if self.release_set.latest().build is None:
+            raise EnvironmentError('No build associated with this release to run this command')
         # TODO: add support for interactive shell
         msg = "{} runs '{}'".format(user.username, command)
         log_event(self, msg)
-        c_num = max([c.num for c in self.container_set.filter(type='admin')] or [0]) + 1
-        try:
-            # create database record for admin process
-            c = Container.objects.create(owner=self.owner,
-                                         app=self,
-                                         release=self.release_set.latest(),
-                                         type='admin',
-                                         num=c_num)
-            image = c.release.image + ':v' + str(c.release.version)
+        c_num = max([c.num for c in self.container_set.filter(type='run')] or [0]) + 1
 
-            # check for backwards compatibility
-            def _has_hostname(image):
-                repo, tag = utils.parse_repository_tag(image)
-                return True if '/' in repo and '.' in repo.split('/')[0] else False
+        # create database record for run process
+        c = Container.objects.create(owner=self.owner,
+                                     app=self,
+                                     release=self.release_set.latest(),
+                                     type='run',
+                                     num=c_num)
+        image = c.release.image
 
-            if not _has_hostname(image):
-                image = '{}:{}/{}'.format(settings.REGISTRY_HOST,
-                                          settings.REGISTRY_PORT,
-                                          image)
-            # SECURITY: shell-escape user input
-            escaped_command = command.replace("'", "'\\''")
-            return c.run(escaped_command)
-        # always cleanup admin containers
-        finally:
-            c.delete()
+        # check for backwards compatibility
+        def _has_hostname(image):
+            repo, tag = utils.parse_repository_tag(image)
+            return True if '/' in repo and '.' in repo.split('/')[0] else False
+
+        if not _has_hostname(image):
+            image = '{}:{}/{}'.format(settings.REGISTRY_HOST,
+                                      settings.REGISTRY_PORT,
+                                      image)
+        # SECURITY: shell-escape user input
+        escaped_command = command.replace("'", "'\\''")
+        return c.run(escaped_command)
 
 
 @python_2_unicode_compatible
@@ -402,7 +375,7 @@ class Container(UuidAuditedModel):
                      protected=True, propagate=False)
 
     def short_name(self):
-        return "{}.{}.{}".format(self.release.app.id, self.type, self.num)
+        return "{}.{}.{}".format(self.app.id, self.type, self.num)
     short_name.short_description = 'Name'
 
     def __str__(self):
@@ -423,7 +396,7 @@ class Container(UuidAuditedModel):
     _job_id = property(_get_job_id)
 
     def _get_scheduler(self):
-        return self.app.cluster._scheduler
+        return self.app._scheduler
 
     _scheduler = property(_get_scheduler)
 
@@ -446,7 +419,7 @@ class Container(UuidAuditedModel):
 
     @transition(field=state, source=INITIALIZED, target=CREATED, on_error=ERROR)
     def create(self):
-        image = self.release.image + ':v' + str(self.release.version)
+        image = self.release.image
         kwargs = {'memory': self.release.config.memory,
                   'cpu': self.release.config.cpu,
                   'tags': self.release.config.tags}
@@ -494,7 +467,10 @@ class Container(UuidAuditedModel):
 
     def run(self, command):
         """Run a one-off command"""
-        image = self.release.image + ':v' + str(self.release.version)
+        if self.release.build is None:
+            raise EnvironmentError('No build associated with this release '
+                                   'to run this command')
+        image = self.release.image
         job_id = self._job_id
         entrypoint = '/bin/bash'
         if self.release.build.procfile:
@@ -556,6 +532,23 @@ class Build(UuidAuditedModel):
         ordering = ['-created']
         unique_together = (('app', 'uuid'),)
 
+    def create(self, user, *args, **kwargs):
+        latest_release = self.app.release_set.latest()
+        source_version = 'latest'
+        if self.sha:
+            source_version = 'git-{}'.format(self.sha)
+        new_release = latest_release.new(user,
+                                         build=self,
+                                         config=latest_release.config,
+                                         source_version=source_version)
+        initial = True if self.app.structure == {} else False
+        try:
+            self.app.deploy(user, new_release, initial=initial)
+            return new_release
+        except RuntimeError:
+            new_release.delete()
+            raise
+
     def __str__(self):
         return "{0}-{1}".format(self.app.id, self.uuid[:7])
 
@@ -597,9 +590,7 @@ class Release(UuidAuditedModel):
     summary = models.TextField(blank=True, null=True)
 
     config = models.ForeignKey('Config')
-    build = models.ForeignKey('Build')
-    # NOTE: image contains combined build + config, ready to run
-    image = models.CharField(max_length=256, default=settings.DEFAULT_BUILD)
+    build = models.ForeignKey('Build', null=True)
 
     class Meta:
         get_latest_by = 'created'
@@ -609,35 +600,43 @@ class Release(UuidAuditedModel):
     def __str__(self):
         return "{0}-v{1}".format(self.app.id, self.version)
 
-    def new(self, user, config=None, build=None, summary=None, source_version='latest'):
+    @property
+    def image(self):
+        return '{}:v{}'.format(self.app.id, str(self.version))
+
+    def new(self, user, config, build, summary=None, source_version='latest'):
         """
         Create a new application release using the provided Build and Config
         on behalf of a user.
 
         Releases start at v1 and auto-increment.
         """
-        if not config:
-            config = self.config
-        if not build:
-            build = self.build
-        # always create a release off the latest image
-        source_image = '{}:{}'.format(build.image, source_version)
         # construct fully-qualified target image
         new_version = self.version + 1
-        tag = 'v{}'.format(new_version)
-        release_image = '{}:{}'.format(self.app.id, tag)
-        target_image = '{}'.format(self.app.id)
         # create new release and auto-increment version
         release = Release.objects.create(
             owner=user, app=self.app, config=config,
-            build=build, version=new_version, image=target_image, summary=summary)
+            build=build, version=new_version, summary=summary)
+        try:
+            release.publish()
+        except EnvironmentError as e:
+            # If we cannot publish this app, just log and carry on
+            logger.info(e)
+            pass
+        return release
+
+    def publish(self, source_version='latest'):
+        if self.build is None:
+            raise EnvironmentError('No build associated with this release to publish')
+        source_tag = 'git-{}'.format(self.build.sha) if self.build.sha else source_version
+        source_image = '{}:{}'.format(self.build.image, source_tag)
         # IOW, this image did not come from the builder
         # FIXME: remove check for mock registry module
-        if not build.sha and 'mock' not in settings.REGISTRY_MODULE:
+        if not self.build.sha and 'mock' not in settings.REGISTRY_MODULE:
             # we assume that the image is not present on our registry,
             # so shell out a task to pull in the repository
             data = {
-                'src': build.image
+                'src': self.build.image
             }
             requests.post(
                 '{}/v1/repositories/{}/tags'.format(settings.REGISTRY_URL,
@@ -647,14 +646,12 @@ class Release(UuidAuditedModel):
             # update the source image to the repository we just imported
             source_image = self.app.id
             # if the image imported had a tag specified, use that tag as the source
-            if ':' in build.image:
-                if '/' not in build.image[build.image.rfind(':') + 1:]:
-                    source_image += build.image[build.image.rfind(':'):]
-
+            if ':' in self.build.image:
+                if '/' not in self.build.image[self.build.image.rfind(':') + 1:]:
+                    source_image += self.build.image[self.build.image.rfind(':'):]
         publish_release(source_image,
-                        config.values,
-                        release_image,)
-        return release
+                        self.config.values,
+                        self.image)
 
     def previous(self):
         """
@@ -671,6 +668,24 @@ class Release(UuidAuditedModel):
         except Release.DoesNotExist:
             prev_release = None
         return prev_release
+
+    def rollback(self, user, version):
+        if version < 1:
+            raise EnvironmentError('version cannot be below 0')
+        summary = "{} rolled back to v{}".format(user, version)
+        prev = self.app.release_set.get(version=version)
+        new_release = self.new(
+            user,
+            build=prev.build,
+            config=prev.config,
+            summary=summary,
+            source_version='v{}'.format(version))
+        try:
+            self.app.deploy(user, new_release)
+            return new_release
+        except RuntimeError:
+            new_release.delete()
+            raise
 
     def save(self, *args, **kwargs):  # noqa
         if not self.summary:
@@ -859,6 +874,13 @@ post_save.connect(_log_domain_added, sender=Domain, dispatch_uid='api.models.log
 post_delete.connect(_log_domain_removed, sender=Domain, dispatch_uid='api.models.log')
 
 
+# automatically generate a new token on creation
+@receiver(post_save, sender=get_user_model())
+def create_auth_token(sender, instance=None, created=False, **kwargs):
+    if created:
+        Token.objects.create(user=instance)
+
+
 # save FSM transitions as they happen
 def _save_transition(**kwargs):
     kwargs['instance'].save()
@@ -880,7 +902,7 @@ except etcd.EtcdException:
 if _etcd_client:
     post_save.connect(_etcd_publish_key, sender=Key, dispatch_uid='api.models')
     post_delete.connect(_etcd_purge_key, sender=Key, dispatch_uid='api.models')
-    post_delete.connect(_etcd_purge_user, sender=User, dispatch_uid='api.models')
+    post_delete.connect(_etcd_purge_user, sender=get_user_model(), dispatch_uid='api.models')
     post_save.connect(_etcd_publish_domains, sender=Domain, dispatch_uid='api.models')
     post_delete.connect(_etcd_purge_domains, sender=Domain, dispatch_uid='api.models')
     post_save.connect(_etcd_create_app, sender=App, dispatch_uid='api.models')

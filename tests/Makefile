@@ -14,8 +14,6 @@ test-full: test-style
 	GOPATH=$(CURDIR)/_vendor:$(GOPATH) \
 		go test -tags integration -v -run TestBuilds
 	GOPATH=$(CURDIR)/_vendor:$(GOPATH) \
-		go test -tags integration -v -run TestClusters
-	GOPATH=$(CURDIR)/_vendor:$(GOPATH) \
 		go test -tags integration -v -run TestConfig
 	GOPATH=$(CURDIR)/_vendor:$(GOPATH) \
 		go test -tags integration -v -run TestKeys
@@ -36,7 +34,7 @@ setup-gotools:
 
 test-style:
 	go vet -x ./...
-	-golint *.go dockercli etcdutils mock utils
+	-golint; golint dockercli; golint etcdutils; golint mock; golint utils
 
 nuke_from_orbit:
 	-docker kill `docker ps -q`

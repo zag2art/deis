@@ -44,20 +44,20 @@ full-clean: check-docker check-registry
 install: check-deisctl
 	deisctl install store-monitor
 	deisctl install store-daemon
-	deisctl scale store-gateway=1
+	deisctl install store-gateway
 
 uninstall: check-deisctl
-	deisctl scale store-gateway=0
+	deisctl uninstall store-gateway
 	deisctl uninstall store-daemon
 	deisctl uninstall store-monitor
 
 start: check-deisctl
 	deisctl start store-monitor
 	deisctl start store-daemon
-	deisctl start store-gateway@1
+	deisctl start store-gateway
 
 stop: check-deisctl
-	deisctl stop store-gateway@1
+	deisctl stop store-gateway
 	deisctl stop store-daemon
 	deisctl stop store-monitor
 
@@ -65,15 +65,19 @@ restart: stop start
 
 run: install start
 
-dev-release: check-registry check-deisctl
+dev-release: push set-image
+
+push: check-registry
 	docker tag $(DAEMON_IMAGE) $(DAEMON_DEV_IMAGE)
 	docker push $(DAEMON_DEV_IMAGE)
-	deisctl config store-daemon set image=$(DAEMON_DEV_IMAGE)
 	docker tag $(MONITOR_IMAGE) $(MONITOR_DEV_IMAGE)
 	docker push $(MONITOR_DEV_IMAGE)
-	deisctl config store-monitor set image=$(MONITOR_DEV_IMAGE)
 	docker tag $(GATEWAY_IMAGE) $(GATEWAY_DEV_IMAGE)
 	docker push $(GATEWAY_DEV_IMAGE)
+
+set-image: check-deisctl
+	deisctl config store-daemon set image=$(DAEMON_DEV_IMAGE)
+	deisctl config store-monitor set image=$(MONITOR_DEV_IMAGE)
 	deisctl config store-gateway set image=$(GATEWAY_DEV_IMAGE)
 
 release:

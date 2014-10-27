@@ -8,7 +8,9 @@ from __future__ import unicode_literals
 
 import json
 
+from django.contrib.auth.models import User
 from django.test import TestCase
+from rest_framework.authtoken.models import Token
 
 from api.models import Key
 from api.utils import fingerprint
@@ -37,27 +39,28 @@ class KeyTest(TestCase):
     fixtures = ['tests.json']
 
     def setUp(self):
-        self.assertTrue(
-            self.client.login(username='autotest', password='password'))
+        self.user = User.objects.get(username='autotest')
+        self.token = Token.objects.get(user=self.user).key
 
     def _check_key(self, pubkey):
         """
         Test that a user can add, remove and manage their SSH public keys
         """
-        url = '/api/keys'
+        url = '/v1/keys'
         body = {'id': 'mykey@box.local', 'public': pubkey}
-        response = self.client.post(url, json.dumps(body), content_type='application/json')
+        response = self.client.post(url, json.dumps(body), content_type='application/json',
+                                    HTTP_AUTHORIZATION='token {}'.format(self.token))
         self.assertEqual(response.status_code, 201)
         key_id = response.data['id']
-        response = self.client.get(url)
+        response = self.client.get(url, HTTP_AUTHORIZATION='token {}'.format(self.token))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data['results']), 1)
-        url = '/api/keys/{key_id}'.format(**locals())
-        response = self.client.get(url)
+        url = '/v1/keys/{key_id}'.format(**locals())
+        response = self.client.get(url, HTTP_AUTHORIZATION='token {}'.format(self.token))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(body['id'], response.data['id'])
         self.assertEqual(body['public'], response.data['public'])
-        response = self.client.delete(url)
+        response = self.client.delete(url, HTTP_AUTHORIZATION='token {}'.format(self.token))
         self.assertEqual(response.status_code, 204)
 
     def test_rsa_key(self):
@@ -70,11 +73,13 @@ class KeyTest(TestCase):
         """
         Test that a user cannot add a duplicate key
         """
-        url = '/api/keys'
+        url = '/v1/keys'
         body = {'id': 'mykey@box.local', 'public': pubkey}
-        response = self.client.post(url, json.dumps(body), content_type='application/json')
+        response = self.client.post(url, json.dumps(body), content_type='application/json',
+                                    HTTP_AUTHORIZATION='token {}'.format(self.token))
         self.assertEqual(response.status_code, 201)
-        response = self.client.post(url, json.dumps(body), content_type='application/json')
+        response = self.client.post(url, json.dumps(body), content_type='application/json',
+                                    HTTP_AUTHORIZATION='token {}'.format(self.token))
         self.assertEqual(response.status_code, 400)
 
     def test_rsa_duplicate_key(self):
@@ -85,7 +90,7 @@ class KeyTest(TestCase):
 
     def test_rsa_key_str(self):
         """Test the text representation of a key"""
-        url = '/api/keys'
+        url = '/v1/keys'
         body = {'id': 'autotest', 'public':
                 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDzqPAwHN70xsB0LXG//KzO'
                 'gcPikyhdN/KRc4x3j/RA0pmFj63Ywv0PJ2b1LcMSqfR8F11WBlrW8c9xFua0'
@@ -94,7 +99,8 @@ class KeyTest(TestCase):
                 'HdQGho20pfJktNu7DxeVkTHn9REMUphf85su7slTgTlWKq++3fASE8PdmFGz'
                 'b6PkOR4c+LS5WWXd2oM6HyBQBxxiwXbA2lSgQxOdgDiM2FzT0GVSFMUklkUH'
                 'MdsaG6/HJDw9QckTS0vN autotest@deis.io'}
-        response = self.client.post(url, json.dumps(body), content_type='application/json')
+        response = self.client.post(url, json.dumps(body), content_type='application/json',
+                                    HTTP_AUTHORIZATION='token {}'.format(self.token))
         self.assertEqual(response.status_code, 201)
         key = Key.objects.get(uuid=response.data['uuid'])
         self.assertEqual(str(key), 'ssh-rsa AAAAB3NzaC.../HJDw9QckTS0vN autotest@deis.io')

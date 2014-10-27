@@ -4,8 +4,8 @@ RESTful view classes for presenting Deis API objects.
 
 from __future__ import absolute_import
 from __future__ import unicode_literals
-import json
 
+from django.conf import settings
 from django.contrib.auth.models import AnonymousUser, User
 from django.core.exceptions import ValidationError
 from django.http import Http404
@@ -58,10 +58,19 @@ class UserRegistrationView(viewsets.GenericViewSet,
             obj.is_superuser = obj.is_staff = True
 
 
-class UserCancellationView(viewsets.GenericViewSet,
-                           viewsets.mixins.DestroyModelMixin):
+class UserManagementView(viewsets.GenericViewSet,
+                         viewsets.mixins.CreateModelMixin,
+                         viewsets.mixins.DestroyModelMixin):
     model = User
     permission_classes = (permissions.IsAuthenticated,)
+
+    def passwd(self, request, *args, **kwargs):
+        obj = self.request.user
+        if not obj.check_password(request.DATA['password']):
+            return Response("Current password did not match", status=status.HTTP_400_BAD_REQUEST)
+        obj.set_password(request.DATA['new_password'])
+        obj.save()
+        return Response({'status': 'password set'})
 
     def destroy(self, request, *args, **kwargs):
         obj = self.request.user
@@ -81,26 +90,6 @@ class OwnerViewSet(viewsets.ModelViewSet):
         """Filter all querysets by an `owner` attribute.
         """
         return self.model.objects.filter(owner=self.request.user)
-
-
-class ClusterViewSet(viewsets.ModelViewSet):
-    """RESTful views for :class:`~api.models.Cluster`."""
-
-    model = models.Cluster
-    serializer_class = serializers.ClusterSerializer
-    permission_classes = (permissions.IsAuthenticated, IsAdmin)
-    lookup_field = 'id'
-
-    def pre_save(self, obj):
-        if not hasattr(obj, 'owner'):
-            obj.owner = self.request.user
-
-    def post_save(self, cluster, created=False, **kwargs):
-        if created:
-            cluster.create()
-
-    def pre_delete(self, cluster):
-        cluster.destroy()
 
 
 class AppPermsViewSet(viewsets.ViewSet):
@@ -262,14 +251,7 @@ class AppBuildViewSet(BaseAppViewSet):
 
     def post_save(self, build, created=False):
         if created:
-            release = build.app.release_set.latest()
-            self.release = release.new(self.request.user, build=build)
-            initial = True if build.app.structure == {} else False
-            try:
-                build.app.deploy(self.request.user, self.release, initial=initial)
-            except RuntimeError:
-                self.release.delete()
-                raise
+            self.release = build.create(self.request.user)
 
     def get_success_headers(self, data):
         headers = super(AppBuildViewSet, self).get_success_headers(data)
@@ -302,10 +284,32 @@ class AppConfigViewSet(BaseAppViewSet):
             raise Http404("No {} matches the given query.".format(
                 self.model._meta.object_name))
 
+    def pre_save(self, config):
+        """merge the old config with the new"""
+        previous_config = config.app.config_set.latest()
+        config.owner = self.request.user
+        if previous_config:
+            config.owner = previous_config.owner
+            for attr in ['cpu', 'memory', 'tags', 'values']:
+                # Guard against migrations from older apps without fixes to
+                # JSONField encoding.
+                try:
+                    data = getattr(previous_config, attr).copy()
+                except AttributeError:
+                    data = {}
+                try:
+                    new_data = getattr(config, attr).copy()
+                except AttributeError:
+                    new_data = {}
+                data.update(new_data)
+                # remove config keys if we provided a null value
+                [data.pop(k) for k, v in new_data.items() if v is None]
+                setattr(config, attr, data)
+
     def post_save(self, config, created=False):
         if created:
             release = config.app.release_set.latest()
-            self.release = release.new(self.request.user, config=config)
+            self.release = release.new(self.request.user, config=config, build=release.build)
             try:
                 config.app.deploy(self.request.user, self.release)
             except RuntimeError:
@@ -318,24 +322,8 @@ class AppConfigViewSet(BaseAppViewSet):
         return headers
 
     def create(self, request, *args, **kwargs):
-        request._data = request.DATA.copy()
-        # assume an existing config object exists
         obj = self.get_object()
         request.DATA['app'] = obj.app
-        for attr in ['cpu', 'memory', 'tags', 'values']:
-            # Guard against migrations from older apps without fixes to
-            # JSONField encoding.
-            try:
-                data = getattr(obj, attr).copy()
-            except AttributeError:
-                data = {}
-            if attr in request.DATA:
-                # merge config values
-                provided = json.loads(request.DATA[attr])
-                data.update(provided)
-                # remove config keys if we provided a null value
-                [data.pop(k) for k, v in provided.items() if v is None]
-            request.DATA[attr] = data
         try:
             return super(AppConfigViewSet, self).create(request, *args, **kwargs)
         except RuntimeError as e:
@@ -352,33 +340,25 @@ class AppReleaseViewSet(BaseAppViewSet):
         """Get Release by version always."""
         return self.get_queryset(**kwargs).get(version=self.kwargs['version'])
 
-    # TODO: move logic into model
     def rollback(self, request, *args, **kwargs):
         """
         Create a new release as a copy of the state of the compiled slug and
         config vars of a previous release.
         """
-        app = get_object_or_404(models.App, id=self.kwargs['id'])
-        release = app.release_set.latest()
-        last_version = release.version
-        version = int(request.DATA.get('version', last_version - 1))
-        if version < 1:
-            return Response(status=status.HTTP_404_NOT_FOUND)
-        summary = "{} rolled back to v{}".format(request.user, version)
-        prev = app.release_set.get(version=version)
-        new_release = release.new(
-            request.user,
-            build=prev.build,
-            config=prev.config,
-            summary=summary,
-            source_version='v{}'.format(version))
         try:
-            app.deploy(request.user, new_release)
+            app = get_object_or_404(models.App, id=self.kwargs['id'])
+            release = app.release_set.latest()
+            version_to_rollback_to = release.version - 1
+            if request.DATA.get('version'):
+                version_to_rollback_to = int(request.DATA['version'])
+            new_release = release.rollback(request.user, version_to_rollback_to)
+            response = {'version': new_release.version}
+            return Response(response, status=status.HTTP_201_CREATED)
+        except EnvironmentError as e:
+            return Response(str(e), status=status.HTTP_400_BAD_REQUEST)
         except RuntimeError as e:
             new_release.delete()
             return Response(str(e), status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        response = {'version': new_release.version}
-        return Response(response, status=status.HTTP_201_CREATED)
 
 
 class AppContainerViewSet(BaseAppViewSet):
@@ -392,6 +372,8 @@ class AppContainerViewSet(BaseAppViewSet):
         container_type = self.kwargs.get('type')
         if container_type:
             qs = qs.filter(type=container_type)
+        else:
+            qs = qs.exclude(type='run')
         return qs
 
     def get_object(self, *args, **kwargs):
@@ -469,20 +451,20 @@ class BuildHookViewSet(BaseHookViewSet):
 
     def create(self, request, *args, **kwargs):
         app = get_object_or_404(models.App, id=request.DATA['receive_repo'])
-        user = get_object_or_404(
+        self.user = get_object_or_404(
             User, username=request.DATA['receive_user'])
         # check the user is authorized for this app
-        if user == app.owner or \
-           user in get_users_with_perms(app) or \
-           user.is_superuser:
+        if self.user == app.owner or \
+           self.user in get_users_with_perms(app) or \
+           self.user.is_superuser:
             request._data = request.DATA.copy()
             request.DATA['app'] = app
-            request.DATA['owner'] = user
+            request.DATA['owner'] = self.user
             try:
                 super(BuildHookViewSet, self).create(request, *args, **kwargs)
                 # return the application databag
                 response = {'release': {'version': app.release_set.latest().version},
-                            'domains': ['.'.join([app.id, app.cluster.domain])]}
+                            'domains': ['.'.join([app.id, settings.DEIS_DOMAIN])]}
                 return Response(response, status=status.HTTP_200_OK)
             except RuntimeError as e:
                 return Response(str(e), status=status.HTTP_503_SERVICE_UNAVAILABLE)
@@ -490,14 +472,7 @@ class BuildHookViewSet(BaseHookViewSet):
 
     def post_save(self, build, created=False):
         if created:
-            release = build.app.release_set.latest()
-            new_release = release.new(build.owner, build=build)
-            initial = True if build.app.structure == {} else False
-            try:
-                build.app.deploy(build.owner, new_release, initial=initial)
-            except RuntimeError:
-                new_release.delete()
-                raise
+            build.create(self.user)
 
 
 class ConfigHookViewSet(BaseHookViewSet):

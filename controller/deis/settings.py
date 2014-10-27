@@ -98,14 +98,13 @@ TEMPLATE_CONTEXT_PROCESSORS = (
     "django.core.context_processors.static",
     "django.core.context_processors.tz",
     "django.contrib.messages.context_processors.messages",
-    "allauth.account.context_processors.account",
     "deis.context_processors.site",
 )
 
 MIDDLEWARE_CLASSES = (
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'api.middleware.VersionMiddleware',
@@ -136,25 +135,22 @@ INSTALLED_APPS = (
     'django.contrib.sites',
     'django.contrib.staticfiles',
     # Third-party apps
-    'allauth',
-    'allauth.account',
     'django_fsm',
     'guardian',
     'json_field',
     'gunicorn',
     'rest_framework',
+    'rest_framework.authtoken',
     'south',
+    'corsheaders',
     # Deis apps
     'api',
     'web',
 )
 
 AUTHENTICATION_BACKENDS = (
-    # Needed to login by username in Django admin, regardless of `allauth`
     "django.contrib.auth.backends.ModelBackend",
     "guardian.backends.ObjectPermissionBackend",
-    # `allauth` specific authentication methods, such as login by e-mail
-    "allauth.account.auth_backends.AuthenticationBackend",
 )
 
 ANONYMOUS_USER_ID = -1
@@ -162,10 +158,24 @@ ACCOUNT_EMAIL_REQUIRED = True
 ACCOUNT_EMAIL_VERIFICATION = 'none'
 ACCOUNT_LOGOUT_ON_GET = True
 ACCOUNT_USERNAME_BLACKLIST = ['system']
-LOGIN_REDIRECT_URL = '/dashboard/'
-
+LOGIN_URL = '/v1/auth/login/'
+LOGIN_REDIRECT_URL = '/'
 
 SOUTH_TESTS_MIGRATE = False
+
+CORS_ORIGIN_ALLOW_ALL = True
+
+CORS_ALLOW_HEADERS = (
+    'content-type',
+    'accept',
+    'origin',
+    'Authentication',
+)
+
+CORS_EXPOSE_HEADERS = (
+    'X_DEIS_VERSION',
+    'X_DEIS_RELEASE',
+)
 
 REST_FRAMEWORK = {
     'DEFAULT_MODEL_SERIALIZER_CLASS':
@@ -174,7 +184,7 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework.authentication.SessionAuthentication',
+        'rest_framework.authentication.TokenAuthentication',
     ),
     'PAGINATE_BY': 100,
 }
@@ -260,8 +270,19 @@ DEIS_LOG_DIR = os.path.abspath(os.path.join(__file__, '..', '..', 'logs'))
 LOG_LINES = 1000
 TEMPDIR = tempfile.mkdtemp(prefix='deis')
 DEFAULT_BUILD = 'deis/helloworld'
+DEIS_DOMAIN = 'deisapp.local'
+
+# standard datetime format used for logging, model timestamps, etc.
+DEIS_DATETIME_FORMAT = '%Y-%m-%dT%H:%M:%S%Z'
+
+# default scheduler settings
+SCHEDULER_MODULE = 'mock'
+SCHEDULER_TARGET = ''  # path to scheduler endpoint (e.g. /var/run/fleet.sock)
+SCHEDULER_AUTH = ''
+SCHEDULER_OPTIONS = {}
 
 # security keys and auth tokens
+SSH_PRIVATE_KEY = ''  # used for SSH connections to facilitate "deis run"
 SECRET_KEY = os.environ.get('DEIS_SECRET_KEY', 'CHANGEME_sapm$s%upvsw5l_zuy_&29rkywd^78ff(qi')
 BUILDER_KEY = os.environ.get('DEIS_BUILDER_KEY', 'CHANGEME_sapm$s%upvsw5l_zuy_&29rkywd^78ff(qi')
 

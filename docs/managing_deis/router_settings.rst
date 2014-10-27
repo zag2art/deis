@@ -19,12 +19,11 @@ Settings set by router
 --------------------------
 The following etcd keys are set by the router component, typically in its /bin/boot script.
 
-===========================              =================================================================================
+=============================            ===================================================================================
 setting                                  description
-===========================              =================================================================================
-/deis/router/$HOST/host                  IP address of the host running this router (there can be multiple routers)
-/deis/router/$HOST/port                  port used by this router service (there can be multiple routers) (default: 80)
-===========================              =================================================================================
+=============================            ===================================================================================
+/deis/router/hosts/$HOST                 IP address and port of the host running this router (there can be multiple routers)
+=============================            ===================================================================================
 
 Settings used by router
 ---------------------------
@@ -68,14 +67,14 @@ supplied with Deis:
 
 .. code-block:: console
 
-    $ deisctl config router set image myaccount/myimage:latest
+    $ deisctl config router set image=myaccount/myimage:latest
 
 This will pull the image from the public Docker registry. You can also pull from a private
 registry:
 
 .. code-block:: console
 
-    $ deisctl config router set image registry.mydomain.org:5000/myaccount/myimage:latest
+    $ deisctl config router set image=registry.mydomain.org:5000/myaccount/myimage:latest
 
 Be sure that your custom image functions in the same way as the `stock router image`_ shipped with
 Deis. Specifically, ensure that it sets and reads appropriate etcd keys.

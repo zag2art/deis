@@ -112,10 +112,10 @@ Table of resources:
 +--------+---------------+--------+---------+
 ```
 
-Launch 3 instances using `coreos-alpha-459-0-0-v20141003` image. You can choose another starting CoreOS image from the listing output of `gcloud compute images list`:
+Launch 3 instances using `coreos-alpha-472-0-0-v20141017` image. You can choose another starting CoreOS image from the listing output of `gcloud compute images list`:
 
 ```console
-$ for num in 1 2 3; do gcutil addinstance --image projects/coreos-cloud/global/images/coreos-alpha-459-0-0-v20141003 --persistent_boot_disk --zone us-central1-a --machine_type n1-standard-2 --tags deis --metadata_from_file user-data:gce-user-data --disk cored${num},deviceName=coredocker --authorized_ssh_keys=core:~/.ssh/deis.pub,core:~/.ssh/google_compute_engine.pub core${num}; done
+$ for num in 1 2 3; do gcutil addinstance --image projects/coreos-cloud/global/images/coreos-alpha-472-0-0-v20141017 --persistent_boot_disk --zone us-central1-a --machine_type n1-standard-2 --tags deis --metadata_from_file user-data:gce-user-data --disk cored${num},deviceName=coredocker --authorized_ssh_keys=core:~/.ssh/deis.pub,core:~/.ssh/google_compute_engine.pub core${num}; done
 
 Table of resources:
 
@@ -305,6 +305,20 @@ $ deisctl list
 MACHINE		IP		METADATA
 ```
 
+Now set the default domain used to anchor your applications:
+
+```console
+$ deisctl config platform set domain=mycluster.local
+```
+
+For this to work, you'll need to configure DNS records so you can access applications hosted on Deis. See [Configuring DNS](http://docs.deis.io/en/latest/installing_deis/configure-dns/) for details.
+
+If you want to allow `deis run` for one-off admin commands, you must provide an SSH private key that allows Deis to gather container logs on CoreOS hosts:
+
+```console
+$ deisctl config platform set sshPrivateKey=<path-to-private-key>
+```
+
 Now we can bootstrap the Deis containers:
 
 ```shell
@@ -313,22 +327,7 @@ deisctl install platform && deisctl start platform
 
 This operation will take a while as all the Deis systemd units are loaded into the CoreOS cluster and the Docker images are pulled down. Grab some iced tea!
 
-Verify that all the units are active after the operation completes:
-
-```console
-$ deisctl list
-UNIT                        MACHINE                     LOAD    ACTIVE  SUB
-deis-builder@1.service      dea53588.../172.17.8.100    loaded  active  running
-deis-cache@1.service        dea53588.../172.17.8.100    loaded  active  running
-deis-controller@1.service   dea53588.../172.17.8.100    loaded  active  running
-deis-database@1.service     dea53588.../172.17.8.100    loaded  active  running
-deis-logger-data.service    dea53588.../172.17.8.100    loaded  active  exited
-deis-logger@1.service       dea53588.../172.17.8.100    loaded  active  running
-deis-registry@1.service     dea53588.../172.17.8.100    loaded  active  running
-deis-router@1.service       dea53588.../172.17.8.100    loaded  active  running
-```
-
-Everything looks good! Register the admin user. The first user added to the system becomes the admin:
+Register the admin user. The first user added to the system becomes the admin:
 
 ```console
 $ deis register http://deis.deisdemo.io

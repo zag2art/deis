@@ -15,10 +15,11 @@ func TestController(t *testing.T) {
 	var err error
 	setkeys := []string{
 		"/deis/registry/protocol",
-		"deis/registry/host",
+		"/deis/registry/host",
 		"/deis/registry/port",
 		"/deis/cache/host",
 		"/deis/cache/port",
+		"/deis/platform/domain",
 	}
 	setdir := []string{
 		"/deis/controller",
@@ -45,6 +46,7 @@ func TestController(t *testing.T) {
 		err = dockercli.RunContainer(cli,
 			"--name", name,
 			"--rm",
+			"-v", "/var/run/fleet.sock:/var/run/fleet.sock",
 			"-p", port+":8000",
 			"-e", "EXTERNAL_PORT="+port,
 			"-e", "HOST="+host,

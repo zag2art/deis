@@ -2,11 +2,12 @@
 
 Deis (pronounced DAY-iss) is an open source PaaS that makes it easy to deploy and manage applications on your own servers. Deis builds upon [Docker](http://docker.io/) and [CoreOS](http://coreos.com) to provide a lightweight PaaS with a [Heroku-inspired](http://heroku.com) workflow.
 
-[![Current Release](http://img.shields.io/badge/release-v0.12.0-blue.svg)](https://github.com/deis/deis/releases/tag/v0.12.0)
+[![Build Status](http://ci.deis.io/buildStatus/icon?job=test-master)](http://ci.deis.io/job/test-master/)
+[![Current Release](http://img.shields.io/badge/release-v0.14.1-blue.svg)](https://github.com/deis/deis/releases/tag/v0.14.1)
 
 ![Deis Graphic](https://s3-us-west-2.amazonaws.com/deis-images/deis-graphic.png)
 
-Deis is pre-release software. The current release is [v0.12.0](https://github.com/deis/deis/tree/v0.12.0). Until there is a stable release, we recommend you check out the latest ["master" branch](https://github.com/deis/deis) code and refer to the [latest documentation](http://docs.deis.io/en/latest/).  Upgrading from a previous Deis release? See [Upgrading Deis](http://docs.deis.io/en/latest/installing_deis/upgrading-deis/) for additional information.
+Deis is pre-release software. The current release is [v0.14.1](https://github.com/deis/deis/tree/v0.14.1). Until there is a stable release, we recommend you check out the latest ["master" branch](https://github.com/deis/deis) code and refer to the [latest documentation](http://docs.deis.io/en/latest/).  Upgrading from a previous Deis release? See [Upgrading Deis](http://docs.deis.io/en/latest/installing_deis/upgrading-deis/) for additional information.
 
 # Deploying Deis
 
@@ -24,15 +25,15 @@ Note for Ubuntu users: the VirtualBox package in Ubuntu (as of the last known re
 
 ## Configure Discovery
 
-Each time you spin up a new CoreOS cluster, you **must** provide a new [discovery service URL](https://coreos.com/docs/cluster-management/setup/cluster-discovery/) in the [CoreOS user-data](https://coreos.com/docs/cluster-management/setup/cloudinit-cloud-config/) file.  This URL allows hosts to find each other and perform leader election.
+Each time you spin up a new CoreOS cluster, you **must** provide a new [discovery service URL](https://coreos.com/docs/cluster-management/setup/cluster-discovery/) in the [CoreOS user-data](https://coreos.com/docs/cluster-management/setup/cloudinit-cloud-config/) file. This unique discovery URL allows hosts to find each other and perform leader election.
 
-Automatically generate a fresh discovery URL with:
+Create a user-data file with a new discovery URL this way:
 
 ```console
 $ make discovery-url
 ```
 
-or manually edit [contrib/coreos/user-data](contrib/coreos/user-data) and add a unique discovery URL generated from <https://discovery.etcd.io/new>.
+Or copy [`contrib/coreos/user-data.example`](contrib/coreos/user-data.example) to `contrib/coreos/user-data` and follow the directions in the `etcd:` section to add a unique discovery URL.
 
 ## Boot CoreOS
 
@@ -47,6 +48,22 @@ This instructs Vagrant to spin up 3 VMs. To be able to connect to the VMs, you m
 
 ```console
 $ ssh-add ~/.vagrant.d/insecure_private_key
+```
+
+## Configure Deis
+
+Before Deis will start successfully, there are a few administrative settings we need to provide.
+
+Set the default domain used to anchor your applications.  For a Vagrant environment, use `local3.deisapp.com` as it will resolve to your local routers:
+
+```console
+$ deisctl config platform set domain=local3.deisapp.com
+```
+
+If you want to allow `deis run` for one-off admin commands, you must provide an SSH private key that allows Deis to gather container logs on CoreOS hosts:
+
+```console
+$ deisctl config platform set sshPrivateKey=~/.vagrant.d/insecure_private_key
 ```
 
 ## Provision Deis
@@ -70,7 +87,7 @@ $ deisctl install platform
 $ deisctl start platform
 ```
 
-This can take some time - the **builder** and **registry** components must download and install the beefy Heroku cedar stack.  Grab some more coffee!
+This can take some time - the **builder** must download and install the beefy Heroku cedar stack.  Grab some more coffee!
 
 Your Deis platform should be accessible at `deis.local3.deisapp.com`.  For clusters on other platforms see our guide to [Configuring DNS](http://docs.deis.io/en/latest/installing_deis/configure-dns/).
 
@@ -99,22 +116,6 @@ $ deis keys:add
 
 Use `deis keys:add` to add your SSH public key for `git push` access -- normally `$HOME/.ssh/id_rsa.pub`.
 
-## Initialize a Cluster
-
-Initialize a `dev` cluster with a list of CoreOS hosts and your CoreOS private key.
-
-```console
-$ deis clusters:create dev local3.deisapp.com --hosts=172.17.8.100 --auth=~/.vagrant.d/insecure_private_key
-```
-
-The parameters to `deis clusters:create` are:
-* cluster name (`dev`) - the name used by Deis to reference the cluster
-* cluster hostname (`local.3deisapp.com`) - the hostname under which apps are created, like `balancing-giraffe.local3.deisapp.com`
-* cluster members (`--hosts`) - a comma-separated list of cluster members -- not necessarily all members, but at least one (for cloud providers, this is a list of the IPs like `--hosts=10.21.12.1,10.21.12.2,10.21.12.3`)
-* auth SSH key (`--auth`) - the SSH private key used to provision servers -- cannot have a password (for cloud providers, this key is likely `~/.ssh/deis`)
-
-The `dev` cluster will be used as the default cluster for future `deis` commands.
-
 # Usage
 
 Deis supports 3 deployment workflows:
@@ -141,7 +142,7 @@ $ cd example-ruby-sinatra
 $ deis create
 ```
 
-Use `deis create --cluster=prod` to place the app on a different cluster.  Don't like our name-generator?  Use `deis create myappname`.
+Don't like our name-generator?  Use `deis create myappname`.
 
 ## Deploy
 When you created the application, a git remote for Deis was added automatically.  Deploy with `git push`.
@@ -200,7 +201,7 @@ Common issues that users have run into when provisioning Deis are detailed below
 Did you remember to add your SSH key to the ssh-agent? `ssh-add -L` should list the key you used to provision the servers. If it's not there, `ssh-add -K /path/to/your/key`.
 
 #### When running a `deisctl` command - 'All the given peers are not reachable (Tried to connect to each peer twice and failed)'
-The most common cause of this issue is that a [new discovery URL](https://discovery.etcd.io/new) wasn't generated and updated in [contrib/coreos/user-data](contrib/coreos/user-data) before the cluster was launched. Each Deis cluster must have a unique discovery URL, else there will be entries for old hosts that etcd will try and fail to connect to. Try destroying and relaunching the cluster with a fresh discovery URL.
+The most common cause of this issue is that a [new discovery URL](https://discovery.etcd.io/new) wasn't generated and updated in `contrib/coreos/user-data` before the cluster was launched. Each Deis cluster must have a unique discovery URL, or else `etcd` will try and fail to connect to old hosts. Try destroying the cluster and relaunching the cluster with a fresh discovery URL.
 
 #### Scaling an app doesn't work, and/or the app shows 'Welcome to nginx!'
 This usually means the controller failed to submit jobs to the scheduler. `deisctl journal controller` will show detailed error information, but the most common cause of this is that the cluster was created with the wrong SSH key for the `--auth` parameter. The key supplied with the `--auth` parameter must be the same key that was used to provision the Deis servers. If you suspect this to be the issue, you'll need to `clusters:destroy` the cluster and recreate it, along with the app.

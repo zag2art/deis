@@ -1,9 +1,9 @@
-FROM ubuntu:14.04
+FROM ubuntu-debootstrap:14.04
 
 ENV DEBIAN_FRONTEND noninteractive
 
 # install common packages
-RUN apt-get update && apt-get install -y curl
+RUN apt-get update && apt-get install -y curl net-tools sudo
 
 # install etcdctl
 RUN curl -sSL -o /usr/local/bin/etcdctl https://s3-us-west-2.amazonaws.com/opdemand/etcdctl-v0.4.6 \
@@ -21,7 +21,7 @@ RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 36A1D7869245C8950F9
 RUN apt-get update && apt-get install -yq \
     openssh-server git \
     aufs-tools iptables lxc \
-    lxc-docker-1.2.0
+    lxc-docker-1.3.0
 
 # install jq for parsing json
 RUN curl http://stedolan.github.io/jq/download/linux64/jq > /usr/bin/jq && chmod 755 /usr/bin/jq
@@ -37,8 +37,8 @@ RUN curl -sSL https://raw.githubusercontent.com/pypa/pip/1.5.6/contrib/get-pip.p
 # install hook dependencies
 RUN pip install pyyaml==3.11 requests==2.4.1
 
-# install all i18n locales
-RUN ln -s /usr/share/i18n/SUPPORTED /var/lib/locales/supported.d/all && locale-gen
+# configure locale
+RUN echo LANG="en_US.UTF-8" > /etc/default/locale && dpkg-reconfigure locales
 
 # install git and configure gituser
 ENV GITHOME /home/git

@@ -13,7 +13,6 @@ Auth commands::
 Subcommands, use ``deis help [subcommand]`` to learn more::
 
   apps          manage applications used to provide services
-  clusters      manage clusters used to host applications
   ps            manage processes inside an app container
   config        manage environment variables that define app config
   domains       manage and assign domain names to your applications
@@ -23,7 +22,7 @@ Subcommands, use ``deis help [subcommand]`` to learn more::
   releases      manage releases of an application
 
   keys          manage ssh keys used for `git push` deployments
-  perms         manage permissions for shared apps and clusters
+  perms         manage permissions for applications
 
 Developer shortcut commands::
 
@@ -42,7 +41,6 @@ Use ``git push deis master`` to deploy to an application.
 from __future__ import print_function
 from collections import namedtuple
 from collections import OrderedDict
-from cookielib import MozillaCookieJar
 from datetime import datetime
 from getpass import getpass
 from itertools import cycle
@@ -69,7 +67,7 @@ from docopt import DocoptExit
 import requests
 from termcolor import colored
 
-__version__ = '0.13.0-dev'
+__version__ = '0.14.1+git'
 
 
 locale.setlocale(locale.LC_ALL, '')
@@ -83,21 +81,14 @@ class Session(requests.Session):
     def __init__(self):
         super(Session, self).__init__()
         self.trust_env = False
-        cookie_file = os.path.expanduser('~/.deis/cookies.txt')
-        cookie_dir = os.path.dirname(cookie_file)
-        self.cookies = MozillaCookieJar(cookie_file)
+        config_dir = os.path.expanduser('~/.deis')
         self.proxies = {
             "http": os.getenv("http_proxy"),
             "https": os.getenv("https_proxy")
         }
         # Create the $HOME/.deis dir if it doesn't exist
-        if not os.path.isdir(cookie_dir):
-            os.mkdir(cookie_dir, 0700)
-        # Load existing cookies if the cookies.txt exists
-        if os.path.isfile(cookie_file):
-            self.cookies.load()
-            self.cookies.clear_expired_cookies()
-            self.cookies.save()
+        if not os.path.isdir(config_dir):
+            os.mkdir(config_dir, 0700)
 
     @property
     def app(self):
@@ -153,25 +144,14 @@ class Session(requests.Session):
 
     def request(self, *args, **kwargs):
         """
-        Issue an HTTP request with proper cookie handling including
-        `Django CSRF tokens <https://docs.djangoproject.com/en/dev/ref/contrib/csrf/>`
+        Issue an HTTP request
         """
-        for cookie in self.cookies:
-            if cookie.name == 'csrftoken':
-                if 'headers' in kwargs:
-                    kwargs['headers']['X-CSRFToken'] = cookie.value
-                else:
-                    kwargs['headers'] = {'X-CSRFToken': cookie.value}
-                break
         url = args[1]
         if 'headers' in kwargs:
             kwargs['headers']['Referer'] = url
         else:
             kwargs['headers'] = {'Referer': url}
         response = super(Session, self).request(*args, **kwargs)
-        self.cookies.save()
-        # set ~/.deis/cookies.txt readable only by its owner
-        os.chmod(self.cookies.filename, 0600)
         return response
 
 
@@ -397,16 +377,18 @@ class DeisClient(object):
         """
         Dispatch an API request to the active Deis controller
         """
+        func = getattr(self._session, method.lower())
+        controller = self._settings.get('controller')
+        token = self._settings.get('token')
+        if not token:
+            raise EnvironmentError(
+                'Could not find token. Use `deis login` or `deis register` to get started.')
+        url = urlparse.urljoin(controller, path, **kwargs)
         headers = {
             'content-type': 'application/json',
             'X-Deis-Version': __version__.rsplit('.', 1)[0],
+            'Authorization': 'token {}'.format(token)
         }
-        func = getattr(self._session, method.lower())
-        controller = self._settings.get('controller')
-        if not controller:
-            raise EnvironmentError(
-                'No active controller. Use `deis login` or `deis register` to get started.')
-        url = urlparse.urljoin(controller, path, **kwargs)
         response = func(url, data=body, headers=headers)
         return response
 
@@ -424,6 +406,8 @@ class DeisClient(object):
 
         Use `deis help [command]` to learn more.
         """
+        sys.argv[1] = 'apps:list'
+        args = docopt(self.apps_list.__doc__)
         return self.apps_list(args)
 
     def apps_create(self, args):
@@ -431,7 +415,6 @@ class DeisClient(object):
         Creates a new application.
 
         - if no <id> is provided, one will be generated automatically.
-        - if no <cluster> is provided, a <cluster> named "dev" will be used.
 
         Usage: deis apps:create [<id>] [options]
 
@@ -441,8 +424,6 @@ class DeisClient(object):
             exist with this name.
 
         Options:
-          --cluster=<cluster>
-            target cluster to host application [default: dev].
           --no-remote
             do not create a `deis` git remote.
         """
@@ -455,20 +436,17 @@ class DeisClient(object):
             app_name = args.get('<id>')
         if app_name:
             body.update({'id': app_name})
-        cluster = args.get('--cluster')
-        if cluster:
-            body.update({'cluster': cluster})
         sys.stdout.write('Creating application... ')
         sys.stdout.flush()
         try:
             progress = TextProgress()
             progress.start()
-            response = self._dispatch('post', '/api/apps',
+            response = self._dispatch('post', '/v1/apps',
                                       json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             data = response.json()
             app_id = data['id']
             self._logger.info("done, created {}".format(app_id))
@@ -528,12 +506,12 @@ class DeisClient(object):
             progress = TextProgress()
             progress.start()
             before = time.time()
-            response = self._dispatch('delete', "/api/apps/{}".format(app))
+            response = self._dispatch('delete', "/v1/apps/{}".format(app))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code in (requests.codes.no_content,  # @UndefinedVariable
-                                    requests.codes.not_found):  # @UndefinedVariable
+        if response.status_code in (requests.codes.no_content,
+                                    requests.codes.not_found):
             self._logger.info('done in {}s'.format(int(time.time() - before)))
             try:
                 # If the requested app is a heroku app, delete the git remote
@@ -553,8 +531,8 @@ class DeisClient(object):
 
         Usage: deis apps:list
         """
-        response = self._dispatch('get', '/api/apps')
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get', '/v1/apps')
+        if response.status_code == requests.codes.ok:
             data = response.json()
             self._logger.info('=== Apps')
             for item in data['results']:
@@ -575,8 +553,8 @@ class DeisClient(object):
         app = args.get('--app')
         if not app:
             app = self._session.app
-        response = self._dispatch('get', "/api/apps/{}".format(app))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get', "/v1/apps/{}".format(app))
+        if response.status_code == requests.codes.ok:
             self._logger.info("=== {} Application".format(app))
             self._logger.info(json.dumps(response.json(), indent=2) + '\n')
             self.ps_list(args)
@@ -599,8 +577,8 @@ class DeisClient(object):
         if not app:
             app = self._session.app
         # TODO: replace with a single API call to apps endpoint
-        response = self._dispatch('get', "/api/apps/{}".format(app))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get', "/v1/apps/{}".format(app))
+        if response.status_code == requests.codes.ok:
             url = response.json()['url']
             # use the OS's default handler to open this URL
             webbrowser.open('http://{}/'.format(url))
@@ -621,13 +599,13 @@ class DeisClient(object):
         app = args.get('--app')
         if not app:
             app = self._session.app
-        response = self._dispatch('post',
-                                  "/api/apps/{}/logs".format(app))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get',
+                                  "/v1/apps/{}/logs".format(app))
+        if response.status_code == requests.codes.ok:
             # strip the last newline character
             for line in response.json().split('\n')[:-1]:
                 # get the tag from the log
-                log_tag = line.split(': ')[0].split(' ')[2]
+                log_tag = line.split(': ')[0].split(' ')[1]
                 # colorize the log based on the tag
                 color = sum([ord(ch) for ch in log_tag]) % 6
                 def f(x):
@@ -658,14 +636,17 @@ class DeisClient(object):
           -a --app=<app>
             the uniquely identifiable name for the application.
         """
+        command = ' '.join(args.get('<command>'))
+        self._logger.info('Running `{}`...'.format(command))
+
         app = args.get('--app')
         if not app:
             app = self._session.app
-        body = {'command': ' '.join(args.get('<command>'))}
+        body = {'command': command}
         response = self._dispatch('post',
-                                  "/api/apps/{}/run".format(app),
+                                  "/v1/apps/{}/run".format(app),
                                   json.dumps(body))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        if response.status_code == requests.codes.ok:
             rc, output = json.loads(response.content)
             sys.stdout.write(output)
             sys.stdout.flush()
@@ -678,9 +659,11 @@ class DeisClient(object):
         Valid commands for auth:
 
         auth:register          register a new user
-        auth:cancel            remove the current account
         auth:login             authenticate against a controller
         auth:logout            clear the current user session
+        auth:passwd            change the password for the current user
+        auth:whoami            display the current user
+        auth:cancel            remove the current user account
 
         Use `deis help [command]` to learn more.
         """
@@ -720,13 +703,10 @@ class DeisClient(object):
         email = args.get('--email')
         if not email:
             email = raw_input('email: ')
-        url = urlparse.urljoin(controller, '/api/auth/register')
+        url = urlparse.urljoin(controller, '/v1/auth/register')
         payload = {'username': username, 'password': password, 'email': email}
-        # Clear any existing cookies
-        self._session.cookies.clear()
-        self._session.cookies.save()
         response = self._session.post(url, data=payload, allow_redirects=False)
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             self._settings['controller'] = controller
             self._settings.save()
             self._logger.info("Registered {}".format(username))
@@ -754,10 +734,9 @@ class DeisClient(object):
         if username:
             confirm = raw_input("Cancel account \"{}\" at {}? (y/n) ".format(username, controller))
             if confirm == 'y':
-                self._dispatch('delete', '/api/auth/cancel')
-                self._session.cookies.clear()
-                self._session.cookies.save()
+                self._dispatch('delete', '/v1/auth/cancel')
                 self._settings['controller'] = None
+                self._settings['token'] = None
                 self._settings.save()
                 self._logger.info('Account cancelled')
             else:
@@ -789,17 +768,15 @@ class DeisClient(object):
         password = args.get('--password')
         if not password:
             password = getpass('password: ')
-        url = urlparse.urljoin(controller, '/api/auth/login/')
+        url = urlparse.urljoin(controller, '/v1/auth/login/')
         payload = {'username': username, 'password': password}
-        # clear any existing cookies
-        self._session.cookies.clear()
-        self._session.cookies.save()
-        # prime cookies for login
-        self._session.get(url, headers=headers)
         # post credentials to the login URL
         response = self._session.post(url, data=payload, allow_redirects=False)
-        if response.status_code == requests.codes.found:  # @UndefinedVariable
+        if response.status_code == requests.codes.ok:
+            # retrieve and save the API token for future requests
             self._settings['controller'] = controller
+            self._settings['username'] = username
+            self._settings['token'] = response.json()['token']
             self._settings.save()
             self._logger.info("Logged in as {}".format(username))
             return username
@@ -812,17 +789,58 @@ class DeisClient(object):
 
         Usage: deis auth:logout
         """
-        controller = self._settings.get('controller')
-        if controller:
-            try:
-                self._dispatch('get', '/api/auth/logout/')
-            except requests.exceptions.ConnectionError:
-                pass
-        self._session.cookies.clear()
-        self._session.cookies.save()
         self._settings['controller'] = None
+        self._settings['username'] = None
+        self._settings['token'] = None
         self._settings.save()
         self._logger.info('Logged out')
+
+    def auth_passwd(self, args):
+        """
+        Changes the password for the current user.
+
+        Usage: deis auth:passwd [options]
+
+        Options:
+          --password=<password>
+            provide the current password for the account.
+          --new-password=<new-password>
+            provide a new password for the account.
+        """
+        if not self._settings.get('token'):
+            raise EnvironmentError(
+                'Could not find token. Use `deis login` or `deis register` to get started.')
+        password = args.get('--password')
+        if not password:
+            password = getpass('current password: ')
+        new_password = args.get('--new-password')
+        if not new_password:
+            new_password = getpass('new password: ')
+            confirm = getpass('new password (confirm): ')
+            if new_password != confirm:
+                self._logger.error('Password mismatch, not changing.')
+                sys.exit(1)
+        payload = {'password': password, 'new_password': new_password}
+        response = self._dispatch('post', "/v1/auth/passwd", json.dumps(payload))
+        if response.status_code == requests.codes.ok:
+            self._logger.info('Password change succeeded.')
+        else:
+            self._logger.info("Password change failed: {}".format(response.text))
+            sys.exit(1)
+        return True
+
+    def auth_whoami(self, args):
+        """
+        Displays the currently logged in user.
+
+        Usage: deis auth:whoami
+        """
+        user = self._settings.get('username')
+        if user:
+            self._logger.info(user)
+        else:
+            self._logger.info(
+                'Not logged in. Use `deis login` or `deis register` to get started.')
 
     def builds(self, args):
         """
@@ -833,6 +851,8 @@ class DeisClient(object):
 
         Use `deis help [command]` to learn more.
         """
+        sys.argv[1] = 'builds:list'
+        args = docopt(self.builds_list.__doc__)
         return self.builds_list(args)
 
     def builds_create(self, args):
@@ -860,11 +880,11 @@ class DeisClient(object):
         try:
             progress = TextProgress()
             progress.start()
-            response = self._dispatch('post', "/api/apps/{}/builds".format(app), json.dumps(body))
+            response = self._dispatch('post', "/v1/apps/{}/builds".format(app), json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             version = response.headers['x-deis-release']
             self._logger.info("done, v{}".format(version))
         else:
@@ -883,206 +903,12 @@ class DeisClient(object):
         app = args.get('--app')
         if not app:
             app = self._session.app
-        response = self._dispatch('get', "/api/apps/{}/builds".format(app))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get', "/v1/apps/{}/builds".format(app))
+        if response.status_code == requests.codes.ok:
             self._logger.info("=== {} Builds".format(app))
             data = response.json()
             for item in data['results']:
                 self._logger.info("{0[uuid]:<23} {0[created]}".format(item))
-        else:
-            raise ResponseError(response)
-
-    def clusters(self, args):
-        """
-        Valid commands for clusters:
-
-        clusters:create        create a new cluster
-        clusters:list          list accessible clusters
-        clusters:update        update cluster fields
-        clusters:info          print a represenation of the cluster
-        clusters:destroy       destroy a cluster
-
-        Use `deis help [command]` to learn more.
-        """
-        return self.clusters_list(args)
-
-    def clusters_create(self, args):
-        """
-        Creates a new cluster.
-
-        Usage: deis clusters:create <id> <domain> --hosts=<hosts> --auth=<auth> [options]
-
-        Arguments:
-          <id>
-            a uniquely identifiable name for the cluster, such as 'dev' or 'prod'.
-
-          <domain>
-            a domain under which app hostnames will live. This must be provided to support
-            multiple applications hosted on the cluster.
-            NOTE: this requires wildcard DNS configuration on the domain. For example, a
-            <domain> of `deisapp.com` requires that `*.deisapp.com` resolves to one of the
-            cluster's router endpoints or the load balancer in front of the routers.
-
-          --hosts=<hosts>
-            a comma-separated list of the cluster members' private IP addresses.
-
-          --auth=<auth>
-            a local file path to an SSH private key. This is the key used to provision and
-            connect to the cluster members. This key must not have a password.
-            NOTE: for EC2 and Rackspace, this key is likely `~/.ssh/deis`.
-
-        Options:
-          --type=<type>
-            cluster type [default: coreos].
-        """
-        body = {'id': args['<id>'], 'domain': args['<domain>'],
-                'hosts': args['--hosts'], 'type': args['--type']}
-        auth_path = os.path.expanduser(args['--auth'])
-        if not os.path.exists(auth_path):
-            self._logger.error('Path to authentication credentials does not exist: {}'.format(auth_path))
-            sys.exit(1)
-        with open(auth_path) as f:
-            data = f.read()
-        body.update({'auth': base64.b64encode(data)})
-        sys.stdout.write('Creating cluster... ')
-        sys.stdout.flush()
-        try:
-            progress = TextProgress()
-            progress.start()
-            response = self._dispatch('post', '/api/clusters', json.dumps(body))
-        finally:
-            progress.cancel()
-            progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
-            data = response.json()
-            cluster = data['id']
-            self._logger.info("done, created {}".format(cluster))
-        else:
-            raise ResponseError(response)
-
-    def clusters_info(self, args):
-        """
-        Prints information about a cluster.
-
-        Usage: deis clusters:info <id>
-
-        Arguments:
-          <id>
-            the uniquely identifiable name for the cluster.
-        """
-        cluster = args.get('<id>')
-        response = self._dispatch('get', "/api/clusters/{}".format(cluster))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
-            self._logger.info("=== {} Cluster".format(cluster))
-            self._logger.info(json.dumps(response.json(), indent=2) + '\n')
-        else:
-            raise ResponseError(response)
-
-    def clusters_list(self, args):
-        """
-        Lists available clusters.
-
-        Usage: deis clusters:list
-        """
-        response = self._dispatch('get', '/api/clusters')
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
-            data = response.json()
-            self._logger.info("=== Clusters")
-            for item in data['results']:
-                self._logger.info("{id}".format(**item))
-        else:
-            raise ResponseError(response)
-
-    def clusters_destroy(self, args):
-        """
-        Destroys a cluster.
-
-        Usage: deis clusters:destroy <id> [options]
-
-        Arguments:
-          <id>
-            the uniquely identifiable name for the cluster.
-
-        Options:
-          --confirm=<id>
-            skips the prompt for the cluster name. <id> is the uniquely identifiable name
-            for the cluster.
-        """
-        cluster = args.get('<id>')
-        confirm = args.get('--confirm')
-        if confirm == cluster:
-            pass
-        else:
-            self._logger.warning("""
- !    WARNING: Potentially Destructive Action
- !    This command will destroy the cluster: {cluster}
- !    To proceed, type "{cluster}" or re-run this command with --confirm={cluster}
-""".format(**locals()))
-            confirm = raw_input('> ').strip('\n')
-            if confirm != cluster:
-                self._logger.info('Destroy aborted')
-                return
-        sys.stdout.write("Destroying cluster... ".format(cluster))
-        sys.stdout.flush()
-        try:
-            progress = TextProgress()
-            progress.start()
-            before = time.time()
-            response = self._dispatch('delete', "/api/clusters/{}".format(cluster))
-        finally:
-            progress.cancel()
-            progress.join()
-        if response.status_code in (requests.codes.no_content,  # @UndefinedVariable
-                                    requests.codes.not_found):  # @UndefinedVariable
-            self._logger.info('done in {}s'.format(int(time.time() - before)))
-        else:
-            raise ResponseError(response)
-
-    def clusters_update(self, args):
-        """
-        Updates cluster fields.
-
-        Usage: deis clusters:update <id> [options]
-
-        Arguments:
-          <id>
-            the uniquely identifiable name for the cluster.
-
-        Options:
-          --domain=<domain>
-            a domain under which app hostnames will live. See `deis help clusters:create`
-            for more information.
-          --hosts=<hosts>
-            a comma-separated list of the cluster members' private IP addresses.
-          --auth=<auth>
-            a local file path to an SSH private key. This is the key used to provision and
-            connect to the cluster members. This key must not have a password.
-          --type=<type>
-            cluster type (default: coreos).
-          --id=<id>
-            the (new) uniquely identifiable name for the cluster.
-        """
-        cluster = args['<id>']
-        body = {}
-        for k, arg in (('domain', '--domain'), ('hosts', '--hosts'),
-                       ('auth', '--auth'), ('type', '--type'), ('id', '--id')):
-            if k == 'auth' and args.get('--auth') is not None:
-                auth_path = os.path.expanduser(args['--auth'])
-                if not os.path.exists(auth_path):
-                    self._logger.error(
-                        "Path to authentication credentials does not exist: {}".format(auth_path))
-                    sys.exit(1)
-                with open(auth_path) as f:
-                    data = f.read()
-                body.update({'auth': base64.b64encode(data)})
-            else:
-                v = args.get(arg)
-                if v:
-                    body.update({k: v})
-        response = self._dispatch('patch', '/api/clusters/{}'.format(cluster),
-                                  json.dumps(body))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
-            self._logger.info(json.dumps(response.json(), indent=2))
         else:
             raise ResponseError(response)
 
@@ -1119,10 +945,10 @@ class DeisClient(object):
             app = self._session.app
 
         oneline = args.get('--oneline')
-        response = self._dispatch('get', "/api/apps/{}/config".format(app))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get', "/v1/apps/{}/config".format(app))
+        if response.status_code == requests.codes.ok:
             config = response.json()
-            values = json.loads(config['values'])
+            values = config['values']
             self._logger.info("=== {} Config".format(app))
             items = values.items()
             if len(items) == 0:
@@ -1169,15 +995,15 @@ class DeisClient(object):
         try:
             progress = TextProgress()
             progress.start()
-            response = self._dispatch('post', "/api/apps/{}/config".format(app), json.dumps(body))
+            response = self._dispatch('post', "/v1/apps/{}/config".format(app), json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             version = response.headers['x-deis-release']
             self._logger.info("done, v{}\n".format(version))
             config = response.json()
-            values = json.loads(config['values'])
+            values = config['values']
             self._logger.info("=== {}".format(app))
             items = values.items()
             if len(items) == 0:
@@ -1215,15 +1041,15 @@ class DeisClient(object):
             progress = TextProgress()
             progress.start()
             response = self._dispatch(
-                'post', "/api/apps/{}/config".format(app), json.dumps(body))
+                'post', "/v1/apps/{}/config".format(app), json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             version = response.headers['x-deis-release']
             self._logger.info("done, v{}\n".format(version))
             config = response.json()
-            values = json.loads(config['values'])
+            values = config['values']
             self._logger.info("=== {}".format(app))
             items = values.items()
             if len(items) == 0:
@@ -1265,9 +1091,9 @@ class DeisClient(object):
                         env_dict[k] = v
             except IOError:
                 pass
-        response = self._dispatch('get', "/api/apps/{}/config".format(app))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
-            config = json.loads(response.json()['values'])
+        response = self._dispatch('get', "/v1/apps/{}/config".format(app))
+        if response.status_code == requests.codes.ok:
+            config = response.json()['values']
             for k, v in config.items():
                 if interactive and raw_input("overwrite {} with {}? (y/N) ".format(k, v)) == 'y':
                     env_dict[k] = v
@@ -1295,6 +1121,8 @@ class DeisClient(object):
 
         Use `deis help [command]` to learn more.
         """
+        sys.argv[1] = 'domains:list'
+        args = docopt(self.domains_list.__doc__)
         return self.domains_list(args)
 
     def domains_add(self, args):
@@ -1322,11 +1150,11 @@ class DeisClient(object):
             progress = TextProgress()
             progress.start()
             response = self._dispatch(
-                'post', "/api/apps/{app}/domains".format(app=app), json.dumps(body))
+                'post', "/v1/apps/{app}/domains".format(app=app), json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             self._logger.info("done")
         else:
             raise ResponseError(response)
@@ -1355,11 +1183,11 @@ class DeisClient(object):
             progress = TextProgress()
             progress.start()
             response = self._dispatch(
-                'delete', "/api/apps/{app}/domains/{domain}".format(**locals()))
+                'delete', "/v1/apps/{app}/domains/{domain}".format(**locals()))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.no_content:  # @UndefinedVariable
+        if response.status_code == requests.codes.no_content:
             self._logger.info("done")
         else:
             raise ResponseError(response)
@@ -1378,8 +1206,8 @@ class DeisClient(object):
         if not app:
             app = self._session.app
         response = self._dispatch(
-            'get', "/api/apps/{app}/domains".format(app=app))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+            'get', "/v1/apps/{app}/domains".format(app=app))
+        if response.status_code == requests.codes.ok:
             domains = response.json()['results']
             self._logger.info("=== {} Domains".format(app))
             if len(domains) == 0:
@@ -1417,8 +1245,8 @@ class DeisClient(object):
         app = args.get('--app')
         if not app:
             app = self._session.app
-        response = self._dispatch('get', "/api/apps/{}/config".format(app))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get', "/v1/apps/{}/config".format(app))
+        if response.status_code == requests.codes.ok:
             self._print_limits(app, response.json())
         else:
             raise ResponseError(response)
@@ -1470,11 +1298,11 @@ class DeisClient(object):
         try:
             progress = TextProgress()
             progress.start()
-            response = self._dispatch('post', "/api/apps/{}/config".format(app), json.dumps(body))
+            response = self._dispatch('post', "/v1/apps/{}/config".format(app), json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             version = response.headers['x-deis-release']
             self._logger.info("done, v{}\n".format(version))
 
@@ -1516,11 +1344,11 @@ class DeisClient(object):
         try:
             progress = TextProgress()
             progress.start()
-            response = self._dispatch('post', "/api/apps/{}/config".format(app), json.dumps(body))
+            response = self._dispatch('post', "/v1/apps/{}/config".format(app), json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             version = response.headers['x-deis-release']
             self._logger.info("done, v{}\n".format(version))
             self._print_limits(app, response.json())
@@ -1542,9 +1370,9 @@ class DeisClient(object):
                 self._logger.info(("{k:<" + str(width) + "} {v}").format(**locals()))
 
         self._logger.info("\n--- Memory")
-        write(json.loads(config.get('memory', '{}')))
+        write(config.get('memory', '{}'))
         self._logger.info("\n--- CPU")
-        write(json.loads(config.get('cpu', '{}')))
+        write(config.get('cpu', '{}'))
 
     def ps(self, args):
         """
@@ -1574,8 +1402,8 @@ class DeisClient(object):
             if not app:
                 app = self._session.app
         response = self._dispatch('get',
-                                  "/api/apps/{}/containers".format(app))
-        if response.status_code != requests.codes.ok:  # @UndefinedVariable
+                                  "/v1/apps/{}/containers".format(app))
+        if response.status_code != requests.codes.ok:
             raise ResponseError(response)
         processes = response.json()
         self._logger.info("=== {} Processes\n".format(app))
@@ -1619,12 +1447,12 @@ class DeisClient(object):
             progress.start()
             before = time.time()
             response = self._dispatch('post',
-                                      "/api/apps/{}/scale".format(app),
+                                      "/v1/apps/{}/scale".format(app),
                                       json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.no_content:  # @UndefinedVariable
+        if response.status_code == requests.codes.no_content:
             self._logger.info('done in {}s'.format(int(time.time() - before)))
             self.ps_list({}, app)
         else:
@@ -1657,8 +1485,8 @@ class DeisClient(object):
         app = args.get('--app')
         if not app:
             app = self._session.app
-        response = self._dispatch('get', "/api/apps/{}/config".format(app))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get', "/v1/apps/{}/config".format(app))
+        if response.status_code == requests.codes.ok:
             self._print_tags(app, response.json())
         else:
             raise ResponseError(response)
@@ -1690,11 +1518,11 @@ class DeisClient(object):
         try:
             progress = TextProgress()
             progress.start()
-            response = self._dispatch('post', "/api/apps/{}/config".format(app), json.dumps(body))
+            response = self._dispatch('post', "/v1/apps/{}/config".format(app), json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             version = response.headers['x-deis-release']
             self._logger.info("done, v{}\n".format(version))
 
@@ -1728,11 +1556,11 @@ class DeisClient(object):
         try:
             progress = TextProgress()
             progress.start()
-            response = self._dispatch('post', "/api/apps/{}/config".format(app), json.dumps(body))
+            response = self._dispatch('post', "/v1/apps/{}/config".format(app), json.dumps(body))
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             version = response.headers['x-deis-release']
             self._logger.info("done, v{}\n".format(version))
             self._print_tags(app, response.json())
@@ -1740,7 +1568,7 @@ class DeisClient(object):
             raise ResponseError(response)
 
     def _print_tags(self, app, config):
-        items = json.loads(config['tags'])
+        items = config['tags']
         self._logger.info("=== {} Tags".format(app))
         if len(items) == 0:
             self._logger.info('No tags defined')
@@ -1761,6 +1589,8 @@ class DeisClient(object):
 
         Use `deis help [command]` to learn more.
         """
+        sys.argv[1] = 'keys:list'
+        args = docopt(self.keys_list.__doc__)
         return self.keys_list(args)
 
     def keys_add(self, args):
@@ -1789,8 +1619,8 @@ class DeisClient(object):
         }
         sys.stdout.write("Uploading {} to Deis...".format(selected_key.id))
         sys.stdout.flush()
-        response = self._dispatch('post', '/api/keys', json.dumps(body))
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        response = self._dispatch('post', '/v1/keys', json.dumps(body))
+        if response.status_code == requests.codes.created:
             self._logger.info('done')
         else:
             raise ResponseError(response)
@@ -1843,8 +1673,8 @@ class DeisClient(object):
 
         Usage: deis keys:list
         """
-        response = self._dispatch('get', '/api/keys')
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get', '/v1/keys')
+        if response.status_code == requests.codes.ok:
             data = response.json()
             if data['count'] == 0:
                 self._logger.info('No keys found')
@@ -1870,8 +1700,8 @@ class DeisClient(object):
         key = args.get('<key>')
         sys.stdout.write("Removing {} SSH Key... ".format(key))
         sys.stdout.flush()
-        response = self._dispatch('delete', "/api/keys/{}".format(key))
-        if response.status_code == requests.codes.no_content:  # @UndefinedVariable
+        response = self._dispatch('delete', "/v1/keys/{}".format(key))
+        if response.status_code == requests.codes.no_content:
             self._logger.info('done')
         else:
             raise ResponseError(response)
@@ -1880,13 +1710,12 @@ class DeisClient(object):
         """
         Valid commands for perms:
 
-        perms:list            list permissions granted on an app or cluster
+        perms:list            list permissions granted on an app
         perms:create          create a new permission for a user
         perms:delete          delete a permission for a user
 
         Use `deis help perms:[command]` to learn more.
         """
-        # perms:transfer        transfer ownership of an app or cluster
         sys.argv[1] = 'perms:list'
         args = docopt(self.perms_list.__doc__)
         return self.perms_list(args)
@@ -1986,10 +1815,10 @@ class DeisClient(object):
         admin = args.get('--admin')
         if admin:
             app = None
-            url = '/api/admin/perms'
+            url = '/v1/admin/perms'
         else:
             app = app[0] or self._session.app
-            url = "/api/apps/{}/perms".format(app)
+            url = "/v1/apps/{}/perms".format(app)
         return app, url
 
     def releases(self, args):
@@ -2002,6 +1831,8 @@ class DeisClient(object):
 
         Use `deis help [command]` to learn more.
         """
+        sys.argv[1] = 'releases:list'
+        args = docopt(self.releases_list.__doc__)
         return self.releases_list(args)
 
     def releases_info(self, args):
@@ -2025,8 +1856,8 @@ class DeisClient(object):
         if not app:
             app = self._session.app
         response = self._dispatch(
-            'get', "/api/apps/{app}/releases/{version}".format(**locals()))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+            'get', "/v1/apps/{app}/releases/{version}".format(**locals()))
+        if response.status_code == requests.codes.ok:
             self._logger.info(json.dumps(response.json(), indent=2))
         else:
             raise ResponseError(response)
@@ -2044,8 +1875,8 @@ class DeisClient(object):
         app = args.get('--app')
         if not app:
             app = self._session.app
-        response = self._dispatch('get', "/api/apps/{app}/releases".format(**locals()))
-        if response.status_code == requests.codes.ok:  # @UndefinedVariable
+        response = self._dispatch('get', "/v1/apps/{app}/releases".format(**locals()))
+        if response.status_code == requests.codes.ok:
             self._logger.info("=== {} Releases".format(app))
             data = response.json()
             for item in data['results']:
@@ -2078,7 +1909,7 @@ class DeisClient(object):
             body = {'version': int(version)}
         else:
             body = {}
-        url = "/api/apps/{app}/releases/rollback".format(**locals())
+        url = "/v1/apps/{app}/releases/rollback".format(**locals())
         if version:
             sys.stdout.write('Rolling back to v{version}... '.format(**locals()))
         else:
@@ -2091,7 +1922,7 @@ class DeisClient(object):
         finally:
             progress.cancel()
             progress.join()
-        if response.status_code == requests.codes.created:  # @UndefinedVariable
+        if response.status_code == requests.codes.created:
             new_version = response.json()['version']
             self._logger.info("done, v{}".format(new_version))
         else:
@@ -2113,11 +1944,11 @@ SHORTCUTS = OrderedDict([
     ('create', 'apps:create'),
     ('destroy', 'apps:destroy'),
     ('info', 'apps:info'),
-    ('init', 'clusters:create'),
     ('login', 'auth:login'),
     ('logout', 'auth:logout'),
     ('logs', 'apps:logs'),
     ('open', 'apps:open'),
+    ('passwd', 'auth:passwd'),
     ('pull', 'builds:create'),
     ('register', 'auth:register'),
     ('rollback', 'releases:rollback'),
@@ -2127,6 +1958,7 @@ SHORTCUTS = OrderedDict([
     ('sharing:list', 'perms:list'),
     ('sharing:add', 'perms:create'),
     ('sharing:remove', 'perms:delete'),
+    ('whoami', 'auth:whoami'),
 ])
 
 

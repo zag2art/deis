@@ -35,7 +35,7 @@ else
   $vb_cpus = 1
 end
 
-COREOS_VERSION = "459.0.0"
+COREOS_VERSION = "472.0.0"
 
 if File.exist?(CONFIG)
   require CONFIG
@@ -54,9 +54,9 @@ Vagrant.configure("2") do |config|
   end
 
   config.vm.provider :virtualbox do |vb, override|
-    # Use AMD Lance nic which seems less problematic than Intel
-    vb.customize ["modifyvm", :id, "--nictype1", "Am79C973"]
-    vb.customize ["modifyvm", :id, "--nictype2", "Am79C973"]
+    # Use paravirtualized network adapters
+    vb.customize ["modifyvm", :id, "--nictype1", "virtio"]
+    vb.customize ["modifyvm", :id, "--nictype2", "virtio"]
   end
 
   config.vm.provider :virtualbox do |v|
@@ -123,6 +123,11 @@ Vagrant.configure("2") do |config|
           s.args = ["/tmp/vagrantfile-user-data", $num_instances]
         end
         config.vm.provision :shell, :inline => "mv /tmp/vagrantfile-user-data /var/lib/coreos-vagrant/", :privileged => true
+      else
+        config.vm.provision :shell do |s|
+          s.inline = "echo \"File not found: #{CLOUD_CONFIG_PATH}\" &&" +
+            "echo \"Run 'make discovery-url' first to create user-data.\" && exit 1"
+        end
       end
 
     end

@@ -24,13 +24,13 @@ log_phase "Installing clients"
 
 # install deis CLI from http://deis.io/ website
 pushd $DEIS_ROOT/deisctl
-curl -sSL http://deis.io/deis-cli/install.sh | sh -s v0.13.0-dev
+curl -sSL http://deis.io/deis-cli/install.sh | sh
 popd
 
 # install deisctl from http://deis.io/ website
 # installs latest unit files to $HOME/.deis/units
 pushd $DEIS_ROOT/client
-curl -sSL http://deis.io/deisctl/install.sh | sh -s v0.13.0-dev
+curl -sSL http://deis.io/deisctl/install.sh | sh
 popd
 
 # ensure we use distributed unit files
@@ -42,7 +42,6 @@ export PATH=$DEIS_ROOT/deisctl:$DEIS_ROOT/client:$PATH
 log_phase "Provisioning 3-node CoreOS"
 
 export DEIS_NUM_INSTANCES=3
-git checkout contrib/coreos/user-data
 make discovery-url
 vagrant up --provider virtualbox
 
@@ -54,10 +53,12 @@ done
 
 log_phase "Provisioning Deis"
 
+# configure platform settings
+deisctl config platform set domain=$DEIS_TEST_DOMAIN
+deisctl config platform set sshPrivateKey=$DEIS_TEST_SSH_KEY
+
 # provision deis from master using :latest
-deisctl install platform
-deisctl scale router=3
-deisctl start router@1 router@2 router@3
+time deisctl install platform
 time deisctl start platform
 
 log_phase "Running integration tests"

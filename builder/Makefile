@@ -15,10 +15,10 @@ full-clean: check-docker check-registry clean
 	docker images -q $(IMAGE_PREFIX)$(COMPONENT) | xargs docker rmi -f
 
 install: check-deisctl
-	deisctl scale $(COMPONENT)=1
+	deisctl install $(COMPONENT)
 
 uninstall: check-deisctl
-	deisctl scale $(COMPONENT)=0
+	deisctl uninstall $(COMPONENT)
 
 start: check-deisctl
 	deisctl start $(COMPONENT)
@@ -30,9 +30,13 @@ restart: stop start
 
 run: install start
 
-dev-release: check-registry check-deisctl
+dev-release: push set-image
+
+push: check-registry
 	docker tag $(IMAGE) $(DEV_IMAGE)
 	docker push $(DEV_IMAGE)
+
+set-image: check-deisctl
 	deisctl config $(COMPONENT) set image=$(DEV_IMAGE)
 
 release:

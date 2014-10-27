@@ -17,6 +17,11 @@ source $THIS_DIR/test-setup.sh
 trap cleanup EXIT
 trap dump_logs ERR
 
+log_phase "Running documentation tests"
+
+# test building documentation
+make -C docs/ test
+
 log_phase "Building from current source tree"
 
 # build all docker images and client binaries
@@ -25,10 +30,6 @@ make build
 # use the built client binaries
 export PATH=$DEIS_ROOT/deisctl:$DEIS_ROOT/client/dist:$PATH
 
-log_phase "Running documentation tests"
-
-make -C docs/ test
-
 log_phase "Running unit and functional tests"
 
 make test-components
@@ -36,7 +37,6 @@ make test-components
 log_phase "Provisioning 3-node CoreOS"
 
 export DEIS_NUM_INSTANCES=3
-git checkout $DEIS_ROOT/contrib/coreos/user-data
 make discovery-url
 vagrant up --provider virtualbox
 
@@ -59,8 +59,6 @@ set_release controller ${OLD_TAG}
 set_release registry ${OLD_TAG}
 
 deisctl install platform
-deisctl scale router=3
-deisctl start router@1 router@2 router@3
 time deisctl start platform
 
 log_phase "Running smoke tests"
@@ -77,6 +75,9 @@ updateservicectl channel update --app-id=${APP_ID} --channel=${CHANNEL} --versio
 
 log_phase "Waiting for upgrade to complete"
 
+# configure platform settings
+deisctl config platform set domain=$DEIS_TEST_DOMAIN
+deisctl config platform set sshPrivateKey=$DEIS_TEST_SSH_KEY
 deisctl config platform channel=${CHANNEL} autoupdate=true
 
 function wait_for_update {

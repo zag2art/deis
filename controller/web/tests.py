@@ -24,23 +24,10 @@ class WebViewsTest(TestCase):
         self.assertContains(response, '<title>Deis | Account</title>', html=True)
         self.assertContains(response, 'autotest-1')
         self.assertContains(response, '<img src="//www.gravatar.com/avatar')
-        self.assertContains(
-            response, '<form method="post" action="/accounts/logout/">')
 
     def test_dashboard(self):
         response = self.client.get('/')
         self.assertContains(response, '<title>Deis | Dashboard</title>', html=True)
-        self.assertContains(
-            response,
-            r'You have <a href="/clusters/">one cluster</a> and <a href="/apps/">one app</a>.')
-
-    def test_clusters(self):
-        response = self.client.get('/clusters/')
-        self.assertContains(response, '<title>Deis | Clusters</title>', html=True)
-        self.assertContains(response, '<h1>One Cluster</h1>')
-        self.assertContains(response, '<h3>autotest-1</h3>')
-        self.assertContains(response, '<dt>Owned by</dt>')
-        self.assertContains(response, '<dd>autotest-1</dd>')
 
     def test_apps(self):
         response = self.client.get('/apps/')

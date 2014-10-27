@@ -4,6 +4,7 @@ Classes to serialize the RESTful representation of Deis API models.
 
 from __future__ import unicode_literals
 
+import json
 import re
 
 from django.conf import settings
@@ -30,6 +31,18 @@ class OwnerSlugRelatedField(serializers.SlugRelatedField):
         """
         self.queryset = self.queryset.filter(owner=self.context['request'].user)
         return serializers.SlugRelatedField.from_native(self, data)
+
+
+class JSONFieldSerializer(serializers.WritableField):
+    def to_native(self, obj):
+        return obj
+
+    def from_native(self, value):
+        try:
+            val = json.loads(value)
+        except TypeError:
+            val = value
+        return val
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -60,37 +73,31 @@ class AdminUserSerializer(serializers.ModelSerializer):
         read_only_fields = ('username',)
 
 
-class ClusterSerializer(serializers.ModelSerializer):
-    """Serialize a :class:`~api.models.Cluster` model."""
+class AppSerializer(serializers.ModelSerializer):
+    """Serialize a :class:`~api.models.App` model."""
 
     owner = serializers.Field(source='owner.username')
+    id = serializers.SlugField(default=utils.generate_app_name)
+    url = serializers.Field(source='url')
+    structure = JSONFieldSerializer(source='structure', required=False)
+    created = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
+    updated = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
 
     class Meta:
-        """Metadata options for a :class:`ClusterSerializer`."""
-        model = models.Cluster
-        read_only_fields = ('created', 'updated')
+        """Metadata options for a :class:`AppSerializer`."""
+        model = models.App
 
-    def validate_domain(self, attrs, source):
+    def validate_id(self, attrs, source):
+        """
+        Check that the ID is all lowercase and not 'deis'
+        """
         value = attrs[source]
-        models.validate_domain(value)
+        match = re.match(r'^[a-z0-9-]+$', value)
+        if not match:
+            raise serializers.ValidationError("App IDs can only contain [a-z0-9-]")
+        if value == 'deis':
+            raise serializers.ValidationError("App IDs cannot be 'deis'")
         return attrs
-
-    def validate_hosts(self, attrs, source):
-        value = attrs[source]
-        models.validate_comma_separated(value)
-        return attrs
-
-
-class PushSerializer(serializers.ModelSerializer):
-    """Serialize a :class:`~api.models.Push` model."""
-
-    owner = serializers.Field(source='owner.username')
-    app = serializers.SlugRelatedField(slug_field='id')
-
-    class Meta:
-        """Metadata options for a :class:`PushSerializer`."""
-        model = models.Push
-        read_only_fields = ('uuid', 'created', 'updated')
 
 
 class BuildSerializer(serializers.ModelSerializer):
@@ -98,11 +105,14 @@ class BuildSerializer(serializers.ModelSerializer):
 
     owner = serializers.Field(source='owner.username')
     app = serializers.SlugRelatedField(slug_field='id')
+    procfile = JSONFieldSerializer(source='procfile', required=False)
+    created = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
+    updated = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
 
     class Meta:
         """Metadata options for a :class:`BuildSerializer`."""
         model = models.Build
-        read_only_fields = ('uuid', 'created', 'updated')
+        read_only_fields = ('uuid',)
 
 
 class ConfigSerializer(serializers.ModelSerializer):
@@ -110,19 +120,17 @@ class ConfigSerializer(serializers.ModelSerializer):
 
     owner = serializers.Field(source='owner.username')
     app = serializers.SlugRelatedField(slug_field='id')
-    values = serializers.ModelField(
-        model_field=models.Config()._meta.get_field('values'), required=False)
-    memory = serializers.ModelField(
-        model_field=models.Config()._meta.get_field('memory'), required=False)
-    cpu = serializers.ModelField(
-        model_field=models.Config()._meta.get_field('cpu'), required=False)
-    tags = serializers.ModelField(
-        model_field=models.Config()._meta.get_field('tags'), required=False)
+    values = JSONFieldSerializer(source='values', required=False)
+    memory = JSONFieldSerializer(source='memory', required=False)
+    cpu = JSONFieldSerializer(source='cpu', required=False)
+    tags = JSONFieldSerializer(source='tags', required=False)
+    created = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
+    updated = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
 
     class Meta:
         """Metadata options for a :class:`ConfigSerializer`."""
         model = models.Config
-        read_only_fields = ('uuid', 'created', 'updated')
+        read_only_fields = ('uuid',)
 
     def validate_memory(self, attrs, source):
         for k, v in attrs.get(source, {}).items():
@@ -171,45 +179,13 @@ class ReleaseSerializer(serializers.ModelSerializer):
     app = serializers.SlugRelatedField(slug_field='id')
     config = serializers.SlugRelatedField(slug_field='uuid')
     build = serializers.SlugRelatedField(slug_field='uuid')
+    created = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
+    updated = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
 
     class Meta:
         """Metadata options for a :class:`ReleaseSerializer`."""
         model = models.Release
-        read_only_fields = ('uuid', 'created', 'updated')
-
-
-class AppSerializer(serializers.ModelSerializer):
-    """Serialize a :class:`~api.models.App` model."""
-
-    owner = serializers.Field(source='owner.username')
-    id = serializers.SlugField(default=utils.generate_app_name)
-    cluster = serializers.SlugRelatedField(slug_field='id')
-    url = serializers.Field(source='url')
-
-    class Meta:
-        """Metadata options for a :class:`AppSerializer`."""
-        model = models.App
-        read_only_fields = ('created', 'updated')
-
-    def validate_id(self, attrs, source):
-        """
-        Check that the ID is all lowercase and not 'deis'
-        """
-        value = attrs[source]
-        match = re.match(r'^[a-z0-9-]+$', value)
-        if not match:
-            raise serializers.ValidationError("App IDs can only contain [a-z0-9-]")
-        if value == 'deis':
-            raise serializers.ValidationError("App IDs cannot be 'deis'")
-        return attrs
-
-    def validate_structure(self, attrs, source):
-        """
-        Check that the structure JSON dict has non-negative ints as its values.
-        """
-        value = attrs[source]
-        models.validate_app_structure(value)
-        return attrs
+        read_only_fields = ('uuid',)
 
 
 class ContainerSerializer(serializers.ModelSerializer):
@@ -218,11 +194,12 @@ class ContainerSerializer(serializers.ModelSerializer):
     owner = serializers.Field(source='owner.username')
     app = OwnerSlugRelatedField(slug_field='id')
     release = serializers.SlugRelatedField(slug_field='uuid')
+    created = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
+    updated = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
 
     class Meta:
         """Metadata options for a :class:`ContainerSerializer`."""
         model = models.Container
-        read_only_fields = ('created', 'updated')
 
     def transform_release(self, obj, value):
         return "v{}".format(obj.release.version)
@@ -232,11 +209,12 @@ class KeySerializer(serializers.ModelSerializer):
     """Serialize a :class:`~api.models.Key` model."""
 
     owner = serializers.Field(source='owner.username')
+    created = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
+    updated = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
 
     class Meta:
         """Metadata options for a KeySerializer."""
         model = models.Key
-        read_only_fields = ('created', 'updated')
 
 
 class DomainSerializer(serializers.ModelSerializer):
@@ -244,12 +222,13 @@ class DomainSerializer(serializers.ModelSerializer):
 
     owner = serializers.Field(source='owner.username')
     app = serializers.SlugRelatedField(slug_field='id')
+    created = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
+    updated = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
 
     class Meta:
         """Metadata options for a :class:`DomainSerializer`."""
         model = models.Domain
         fields = ('domain', 'owner', 'created', 'updated', 'app')
-        read_only_fields = ('created', 'updated')
 
     def validate_domain(self, attrs, source):
         """
@@ -274,3 +253,17 @@ class DomainSerializer(serializers.ModelSerializer):
                 "Adding a wildcard subdomain is currently not supported".format(value))
 
         return attrs
+
+
+class PushSerializer(serializers.ModelSerializer):
+    """Serialize a :class:`~api.models.Push` model."""
+
+    owner = serializers.Field(source='owner.username')
+    app = serializers.SlugRelatedField(slug_field='id')
+    created = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
+    updated = serializers.DateTimeField(format=settings.DEIS_DATETIME_FORMAT, read_only=True)
+
+    class Meta:
+        """Metadata options for a :class:`PushSerializer`."""
+        model = models.Push
+        read_only_fields = ('uuid',)
